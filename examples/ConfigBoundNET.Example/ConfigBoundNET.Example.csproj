@@ -1,0 +1,65 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Minimal host application that demonstrates ConfigBoundNET end-to-end.
+    It binds the configuration section declared in appsettings.json to a
+    strongly-typed record, validates it at startup, and logs the result.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ConfigBoundNET.Example</RootNamespace>
+    <!-- The example is documentation, not a shipped artifact. -->
+    <IsPackable>false</IsPackable>
+    <!-- Emit generator output to disk so developers can inspect what
+         ConfigBoundNET produced. Useful when debugging the example.
+         The generated folder is excluded from <Compile> below so MSBuild
+         doesn't accidentally include the same source twice. -->
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    <CompilerGeneratedFilesOutputPath>generated</CompilerGeneratedFilesOutputPath>
+
+    <!-- Suppress analyzer false-positives that are intrinsic to the
+         IOptions<T> binding pattern:
+           CA1812 — DbConfig "is never instantiated" (it is, reflectively,
+                    by ConfigurationBinder; the analyzer cannot see that).
+           CA1852 — DbConfig "could be sealed" (records bound via IOptions
+                    are conventionally left unsealed so users can derive
+                    or mock them in tests). -->
+    <NoWarn>$(NoWarn);CA1812;CA1852</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Generic host gives us IConfiguration, IServiceProvider and the
+         options pipeline out of the box. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Exclude the persisted generator output from <Compile>. Without this
+         MSBuild's default "**\*.cs" glob would pick the same files the
+         generator has already added to the compilation, causing duplicate
+         type definitions. -->
+    <Compile Remove="generated/**" />
+    <None Include="generated/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The generator must be referenced as an Analyzer and must NOT be
+         referenced as a runtime assembly. This mirrors how consumers would
+         reference the shipped NuGet package. -->
+    <ProjectReference Include="..\..\src\ConfigBoundNET\ConfigBoundNET.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Copy appsettings.json next to the executable so IConfiguration can
+         pick it up at runtime. -->
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

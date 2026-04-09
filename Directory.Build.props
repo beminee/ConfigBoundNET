@@ -1,0 +1,36 @@
+<Project>
+
+  <!--
+    Shared build properties for every project in the ConfigBoundNET repository.
+    Per-project csproj files only need to declare things that differ from these
+    defaults (TargetFramework, package metadata overrides, etc.).
+  -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <AnalysisMode>All</AnalysisMode>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- CS1591: missing XML comment for publicly visible member. We set
+         GenerateDocumentationFile to true so public API docs are emitted,
+         but we do not require every private / internal member be documented. -->
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <!-- Shared package / repository metadata. -->
+  <PropertyGroup>
+    <Authors>ConfigBoundNET contributors</Authors>
+    <Company>ConfigBoundNET</Company>
+    <Product>ConfigBoundNET</Product>
+    <Copyright>Copyright (c) ConfigBoundNET contributors</Copyright>
+    <PackageLicenseExpression>GPL3</PackageLicenseExpression>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://github.com/ConfigBoundNET/ConfigBoundNET</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/ConfigBoundNET/ConfigBoundNET</PackageProjectUrl>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+</Project>

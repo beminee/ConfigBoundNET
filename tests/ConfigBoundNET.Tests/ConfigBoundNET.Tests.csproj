@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Unit tests for the ConfigBoundNET source generator. We drive the generator
+    directly against synthetic compilations via CSharpGeneratorDriver so we can
+    assert on both emitted source and diagnostics without spinning up MSBuild.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+
+    <!-- Relax a handful of analyzer rules that don't play well with test code:
+           CA1707 — xUnit idiomatically uses underscores in test names for readability.
+           CA1305 — explicit CultureInfo on every string op is overkill in tests.
+           CA1307 — likewise for StringComparison.
+           CA1812 — the test harness is instantiated via Roslyn, not visible to analyzers. -->
+    <NoWarn>$(NoWarn);CA1707;CA1305;CA1307;CA1812</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Test runner & assertions -->
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.4.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+
+    <!-- Roslyn drives the generator tests. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
+    <!-- Supplies the full .NET 8 reference-assembly set so synthetic
+         compilations can resolve BCL types like System.Object reliably. -->
+    <PackageReference Include="Basic.Reference.Assemblies.Net80" Version="1.7.9" />
+
+    <!-- Pulls in the reference assemblies the test compilation needs to see
+         IValidateOptions, IConfiguration, IServiceCollection, etc. -->
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Regular project reference: the tests instantiate ConfigBoundGenerator
+         directly and drive it against synthetic compilations, so they need
+         access to the generator type at runtime. -->
+    <ProjectReference Include="..\..\src\ConfigBoundNET\ConfigBoundNET.csproj" />
+  </ItemGroup>
+
+</Project>

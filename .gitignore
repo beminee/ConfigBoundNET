@@ -1,0 +1,84 @@
+## ─────────────────────────────────────────────────────────────────────────────
+## .gitignore for ConfigBoundNET
+## Based on the standard `dotnet new gitignore` template, trimmed and annotated
+## for this repository.
+## ─────────────────────────────────────────────────────────────────────────────
+
+# Build output
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+
+# Source generator output that we ask the example project to write to disk
+# via <EmitCompilerGeneratedFiles>. Useful to read locally, never committed.
+generated/
+**/CompilerGeneratedFiles/
+
+# Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.swp
+
+# ReSharper / Rider caches
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# NuGet
+*.nupkg
+*.snupkg
+**/packages/*
+!**/packages/build/
+.nuget/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Test results & coverage
+[Tt]est[Rr]esult*/
+*.coverage
+*.coveragexml
+coverage*.json
+coverage*.xml
+coverage*.info
+*.opencover.xml
+
+# BenchmarkDotNet artifacts
+BenchmarkDotNet.Artifacts/
+
+# Rider / JetBrains profiling
+*.dotCover
+*.dotTrace
+*.dmp
+
+# Roslyn / MSBuild diagnostic logs
+msbuild.log
+msbuild.err
+msbuild.wrn
+*.binlog
+
+# Local environment / secrets — never commit
+.env
+.env.*
+appsettings.*.local.json
+secrets.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Backup / temp files
+*.bak
+*.tmp
+*.orig
+*.rej

@@ -1,0 +1,77 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ConfigBoundNET ships as a Roslyn source generator packaged as a NuGet analyzer.
+    It must target netstandard2.0 because that is the TFM Roslyn loads generators
+    from inside the compiler. We emit the [ConfigSection] attribute at post-init
+    time so consumers get everything they need from a single package reference.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+
+    <!-- Mark this as a Roslyn component so the SDK wires up the correct
+         analyzer references and enables analyzer-specific diagnostics. -->
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+
+    <!-- Generators do not ship a runtime DLL in lib/; they live under analyzers/.
+         These flags keep the build output and its transitive dependencies out
+         of consumers' runtime closures. -->
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+
+    <!-- Package metadata -->
+    <PackageId>ConfigBoundNET</PackageId>
+    <Title>ConfigBoundNET</Title>
+    <Description>Compile-time validated, strongly-typed configuration binding for .NET. Annotate a partial record with [ConfigSection] and get a validator, DI extension method, and build-time diagnostics for free.</Description>
+    <PackageTags>configuration;source-generator;options;validation;roslyn;ioptions</PackageTags>
+
+    <!-- Roslyn components cannot depend on the documentation analyzer here
+         because it would demand docs on emitted helper types. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="bin\**" />
+    <EmbeddedResource Remove="bin\**" />
+    <None Remove="bin\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- PrivateAssets="all" ensures these are compile-time only and are not
+         propagated as NuGet dependencies on the consuming project. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" PrivateAssets="all" />
+    <!-- PolySharp synthesises modern C# features (records, init-only setters,
+         `required`, etc.) on the netstandard2.0 TFM required by Roslyn. -->
+    <PackageReference Include="PolySharp" Version="1.14.1" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="bin\Debug\netstandard2.0\\ConfigBoundNET.dll" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Package the generator DLL into the `analyzers/dotnet/cs` folder of
+         the resulting NuGet so the Roslyn host loads it automatically. -->
+    <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Analyzer release tracking files consumed by RS2008. Every diagnostic
+         descriptor we ship must be listed in one of these files so analyzer
+         versioning stays auditable. -->
+    <AdditionalFiles Include="AnalyzerReleases.Shipped.md" />
+    <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Expose internals to the test project so tests can drive the generator
+         and reference internal helpers (AttributeSource, ModelBuilder, etc.)
+         without promoting them to public API. -->
+    <InternalsVisibleTo Include="ConfigBoundNET.Tests" />
+  </ItemGroup>
+
+</Project>
