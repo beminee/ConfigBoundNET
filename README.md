@@ -81,7 +81,7 @@ ConfigBoundNET ships as a single analyzer package. There is no runtime dependenc
 You will also need the standard `IOptions<T>` binding packages, which are already transitive in most ASP.NET Core / Generic Host apps:
 
 ```xml
-<PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="8.0.0" />
+<PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.5" />
 ```
 
 ---
@@ -221,4 +221,4 @@ Issues and PRs welcome. Please make sure `dotnet test` passes and that any new d
 
 ## License
 
-MIT. See `LICENSE` for details.
+GPL3. See `LICENSE` for details.
