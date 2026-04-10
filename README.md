@@ -29,6 +29,7 @@ Declare the shape once:
 
 ```csharp
 using ConfigBoundNET;
+using System.ComponentModel.DataAnnotations;
 
 namespace MyApp;
 
@@ -38,6 +39,12 @@ public partial record DbConfig
     public string Conn { get; init; } = default!;           // required (non-nullable)
     public int    CommandTimeoutSeconds { get; init; } = 30; // optional with default
     public string? ReplicaConn { get; init; }                // optional (nullable)
+
+    [Range(1, 65535)]                                        // validated at startup
+    public int Port { get; init; } = 5432;
+
+    [RegularExpression(@"^https?://")]
+    public string Endpoint { get; init; } = default!;
 }
 ```
 
@@ -55,7 +62,8 @@ builder.Services
 ConfigBoundNET generates everything else at build time:
 
 - `DbConfig.SectionName` — a compile-time `const string` equal to `"Db"`.
-- `DbConfig.Validator` — an `IValidateOptions<DbConfig>` that null/whitespace-checks every required property.
+- `DbConfig(IConfigurationSection)` — an AOT-safe, reflection-free constructor that reads values from config with explicit `TryParse` calls per property.
+- `DbConfig.Validator` — an `IValidateOptions<DbConfig>` that null/whitespace-checks every required property **and** emits explicit checks for DataAnnotations (`[Range]`, `[RegularExpression]`, `[StringLength]`, etc.).
 - `DbConfigServiceCollectionExtensions.AddDbConfig(IServiceCollection, IConfiguration)` — binds the section, registers the validator idempotently via `TryAddEnumerable`, and wires change-token propagation so `IOptionsMonitor<T>` reacts to reloads.
 
 If the connection string is missing from `appsettings.json`, the host fails at startup with:
@@ -98,6 +106,52 @@ ConfigBoundNET infers required-ness from the type system, so you almost never ne
 | `public int Timeout { get; init; }`           | Not checked | Value types bind defaults; layer DataAnnotations on top for bounds checks. |
 
 Required reference-type properties get a null check. `string` properties additionally get an `IsNullOrWhiteSpace` check — empty strings in config are almost always deployment mistakes.
+
+---
+
+## DataAnnotations validation
+
+On top of the nullability-driven required-field checks, ConfigBoundNET scans for standard `System.ComponentModel.DataAnnotations` attributes and emits **explicit, reflection-free validation checks** for each one. No `Validator.TryValidateObject`, no reflection — just straight `if` statements in the generated `Validate` method.
+
+```csharp
+[ConfigSection("Api")]
+public partial record ApiConfig
+{
+    [Range(1, 65535)]
+    public int Port { get; init; } = 8080;
+
+    [StringLength(200, MinimumLength = 5)]
+    public string DisplayName { get; init; } = default!;
+
+    [RegularExpression(@"^https?://")]
+    public string Endpoint { get; init; } = default!;
+
+    [Url]
+    public string CallbackUrl { get; init; } = default!;
+
+    [EmailAddress]
+    public string AdminEmail { get; init; } = default!;
+}
+```
+
+### Supported annotations
+
+| Attribute | Applies to | Generated check |
+| --- | --- | --- |
+| `[Required]` | any | null/whitespace check (same as nullability; CB0009 warns if redundant) |
+| `[Range(min, max)]` | numeric types | `if (options.X < min \|\| options.X > max)` |
+| `[StringLength(max, MinimumLength = n)]` | `string` | `if (options.X.Length < n \|\| options.X.Length > max)` |
+| `[MinLength(n)]` | `string` | `if (options.X.Length < n)` |
+| `[MaxLength(n)]` | `string` | `if (options.X.Length > n)` |
+| `[RegularExpression(pattern)]` | `string` | precompiled static `Regex` field + `IsMatch` |
+| `[Url]` | `string` | `Uri.TryCreate(options.X, UriKind.Absolute, out _)` |
+| `[EmailAddress]` | `string` | precompiled static `Regex` matching the BCL pattern |
+| `[AllowedValues(...)]` | any (.NET 8+) | inline array + `Contains` |
+| `[DeniedValues(...)]` | any (.NET 8+) | inline array + `Contains` (negated) |
+
+All string checks are null-guarded so they don't mask the primary "required" error.
+
+Misapplied annotations are caught at **build time** with dedicated diagnostics (CB0006–CB0009, see table below). Invalid regex patterns in `[RegularExpression]` are validated during compilation via `new Regex(pattern)` and produce CB0008 immediately.
 
 ---
 
@@ -153,6 +207,10 @@ partial record DbConfig
 
     public sealed class Validator : IValidateOptions<DbConfig>
     {
+        // Precompiled regex for [RegularExpression] — compiled once, not per call.
+        private static readonly Regex _cb_Regex_Endpoint =
+            new(@"^https?://", RegexOptions.Compiled);
+
         public ValidateOptionsResult Validate(string? name, DbConfig options)
         {
             if (options is null)
@@ -160,8 +218,16 @@ partial record DbConfig
 
             var failures = new List<string>();
 
+            // Required-field checks (from nullability analysis):
             if (string.IsNullOrWhiteSpace(options.Conn))
                 failures.Add("[Db:Conn] is required but was null, empty, or whitespace.");
+
+            // DataAnnotations checks (from [Range], [RegularExpression], etc.):
+            if (options.Port < 1 || options.Port > 65535)
+                failures.Add("[Db:Port] must be between 1 and 65535.");
+
+            if (options.Endpoint is not null && !_cb_Regex_Endpoint.IsMatch(options.Endpoint))
+                failures.Add("[Db:Endpoint] does not match the required pattern.");
 
             return failures.Count > 0
                 ? ValidateOptionsResult.Fail(failures)
@@ -211,16 +277,20 @@ You can inspect the real output by setting `<EmitCompilerGeneratedFiles>true</Em
 
 ## Diagnostics
 
-| ID     | Severity | Meaning                                                                   |
-| ------ | -------- | ------------------------------------------------------------------------- |
-| CB0001 | Error    | Type decorated with `[ConfigSection]` is missing the `partial` modifier.  |
-| CB0002 | Error    | `[ConfigSection("")]` section name is null, empty, or whitespace.         |
-| CB0003 | Error    | `[ConfigSection]` applied to a nested type (only top-level types allowed). |
-| CB0004 | Warning  | Annotated type has no public writable properties — nothing to bind.       |
-| CB0005 | Error    | `[ConfigSection]` applied to a struct or other unsupported type kind.     |
-| CB0010 | Warning  | Property type is outside the AOT-safe binding set; will be skipped.       |
+| ID     | Severity | Meaning                                                                      |
+| ------ | -------- | ---------------------------------------------------------------------------- |
+| CB0001 | Error    | Type decorated with `[ConfigSection]` is missing the `partial` modifier.     |
+| CB0002 | Error    | `[ConfigSection("")]` section name is null, empty, or whitespace.            |
+| CB0003 | Error    | `[ConfigSection]` applied to a nested type (only top-level types allowed).   |
+| CB0004 | Warning  | Annotated type has no public writable properties — nothing to bind.          |
+| CB0005 | Error    | `[ConfigSection]` applied to a struct or other unsupported type kind.        |
+| CB0006 | Warning  | `[Range]` applied to a non-numeric property type — annotation ignored.       |
+| CB0007 | Warning  | `[StringLength]`/`[MinLength]`/`[MaxLength]` on a non-string — ignored.     |
+| CB0008 | Error    | `[RegularExpression]` pattern is not a valid .NET regex.                      |
+| CB0009 | Info     | `[Required]` is redundant — property is already non-nullable.                |
+| CB0010 | Warning  | Property type is outside the AOT-safe binding set; will be skipped.          |
 
-All diagnostics fire at **build time**. CB0001–CB0003 and CB0005 fail the build; CB0004 and CB0010 are advisory.
+All diagnostics fire at **build time**. CB0001–CB0003, CB0005, and CB0008 fail the build; the rest are advisory.
 
 ---
 
@@ -262,7 +332,7 @@ ConfigBoundNET/
 # Restore + build the whole solution (generator, tests, AOT smoke, example).
 dotnet build ConfigBoundNET.sln
 
-# 20 unit + integration tests covering every BindingStrategy.
+# 35 unit + integration tests covering binding, validation, and diagnostics.
 dotnet test  tests/ConfigBoundNET.Tests/ConfigBoundNET.Tests.csproj
 ```
 
@@ -314,7 +384,7 @@ ConfigBoundNET is currently at **0.1**. The pieces below are tracked toward 1.0;
 
 ### Tier 1 — needed before 1.0
 
-- [ ] **DataAnnotations validation.** Honor `[Range]`, `[StringLength]`, `[RegularExpression]`, `[Url]`, `[MinLength]`, `[EmailAddress]`, etc. Without this, anyone with a `Port { get; init; }` has to write a hand-rolled validator on the side, defeating the point of the library.
+- [x] **DataAnnotations validation.** ✅ The generator scans for `[Range]`, `[StringLength]`, `[MinLength]`, `[MaxLength]`, `[RegularExpression]`, `[Url]`, `[EmailAddress]`, `[Required]`, `[AllowedValues]`, and `[DeniedValues]` and emits explicit, reflection-free validation checks. Misapplied annotations (e.g. `[Range]` on a string) are caught at build time with CB0006–CB0009 diagnostics. Regex patterns are validated at compile time. See the DataAnnotations section above.
 - [x] **Reflection-free binding (AOT support).** ✅ The generator emits an explicit `(IConfigurationSection)` constructor on every annotated type and registers a `ConfigBoundOptionsFactory<T>` shim that calls it, replacing `ConfigurationBinder.Bind` entirely. The pipeline is now trim- and Native-AOT-friendly for the supported type set listed above.
 - [x] **AOT smoke-test workflow.** ✅ [`tests/ConfigBoundNET.AotTests`](tests/ConfigBoundNET.AotTests/) is a console app with `<IsAotCompatible>true</IsAotCompatible>` that exercises every `BindingStrategy` and asserts on the bound values. [`.github/workflows/aot.yml`](.github/workflows/aot.yml) runs the static analyzer build on every push and a full `dotnet publish` Native AOT compile on Linux x64 right after, executing the resulting native binary to confirm the round-trip. The smoke test caught and fixed one real defect during initial setup (an `IL2091` from the missing `[DynamicallyAccessedMembers]` annotation on `ConfigBoundOptionsFactory<T>`), which is exactly the kind of regression CI is now guarding against.
 - [ ] **Custom validation hook.** Generate a `partial void ValidateCustom(List<string> failures)` so users can express cross-field rules ("`ConnString` XOR `ConnStringSecretRef` must be set") without writing a separate `IValidateOptions<T>`.

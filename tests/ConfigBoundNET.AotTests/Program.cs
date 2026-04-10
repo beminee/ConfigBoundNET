@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
 using ConfigBoundNET.AotTests;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -123,7 +124,13 @@ namespace ConfigBoundNET.AotTests
         /// <summary>Required string. Validator catches missing values.</summary>
         public string Conn { get; init; } = default!;
 
+        /// <summary>
+        /// Port with a <c>[Range]</c> annotation. Exercises the generated
+        /// bounds-check emitter + the numeric literal formatter under AOT.
+        /// </summary>
+        [Range(1, 65535)]
         public int Port { get; init; }
+
         public long MaxBytes { get; init; }
         public byte Retries { get; init; }
 

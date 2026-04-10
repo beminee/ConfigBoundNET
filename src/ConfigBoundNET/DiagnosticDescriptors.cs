@@ -91,6 +91,58 @@ internal static class DiagnosticDescriptors
     /// else needs either a wrapper type, a custom <c>IValidateOptions&lt;T&gt;</c>,
     /// or a manual <c>services.Configure&lt;T&gt;()</c> call layered on top.
     /// </remarks>
+    /// <summary>
+    /// CB0006 — <c>[Range]</c> is applied to a property whose type is not
+    /// numeric (<see cref="BindingStrategy.Integer"/> or
+    /// <see cref="BindingStrategy.FloatingPoint"/>). The annotation is ignored.
+    /// </summary>
+    public static readonly DiagnosticDescriptor RangeOnNonNumeric = new(
+        id: "CB0006",
+        title: "[Range] applied to non-numeric property",
+        messageFormat: "[Range] on property '{0}' is invalid because type '{1}' is not numeric and will be ignored",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
+    /// <summary>
+    /// CB0007 — a length-related attribute (<c>[StringLength]</c>,
+    /// <c>[MinLength]</c>, or <c>[MaxLength]</c>) is applied to a non-string
+    /// property. The annotation is ignored.
+    /// </summary>
+    public static readonly DiagnosticDescriptor LengthOnNonString = new(
+        id: "CB0007",
+        title: "Length attribute applied to non-string property",
+        messageFormat: "[{0}] on property '{1}' is invalid because type '{2}' is not a string and will be ignored",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true);
+
+    /// <summary>
+    /// CB0008 — the pattern supplied to <c>[RegularExpression]</c> is not a
+    /// valid .NET regex. Validated at build time via <c>new Regex(pattern)</c>
+    /// inside the generator.
+    /// </summary>
+    public static readonly DiagnosticDescriptor InvalidRegexPattern = new(
+        id: "CB0008",
+        title: "[RegularExpression] pattern is not a valid regex",
+        messageFormat: "[RegularExpression] on property '{0}' has an invalid pattern: {1}",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Error,
+        isEnabledByDefault: true);
+
+    /// <summary>
+    /// CB0009 — <c>[Required]</c> is applied to a property that is already
+    /// non-nullable. The generator validates non-nullable properties
+    /// automatically, so the attribute is redundant. Informational only.
+    /// </summary>
+    public static readonly DiagnosticDescriptor RedundantRequired = new(
+        id: "CB0009",
+        title: "[Required] is redundant on non-nullable property",
+        messageFormat: "[Required] on property '{0}' is redundant because the property is already non-nullable and will be validated automatically",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Info,
+        isEnabledByDefault: true);
+
     public static readonly DiagnosticDescriptor UnsupportedBindingType = new(
         id: "CB0010",
         title: "Property type is not bindable by ConfigBoundNET",

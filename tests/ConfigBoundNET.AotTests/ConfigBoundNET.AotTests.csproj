@@ -78,12 +78,16 @@
     <!-- The generated code references types from these packages.
          Microsoft.Extensions.Options.ConfigurationExtensions is required
          because that's where ConfigurationChangeTokenSource<T> lives — the
-         type the generated DI extension uses for IOptionsMonitor reload-on-change. -->
+         type the generated DI extension uses for IOptionsMonitor reload-on-change.
+         System.ComponentModel.Annotations provides the DataAnnotations
+         attributes (Range, RegularExpression, etc.) that the generator now
+         scans and turns into reflection-free validation checks. -->
     <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.5" />
+    <PackageReference Include="System.ComponentModel.Annotations" Version="5.0.0" />
   </ItemGroup>
 
   <ItemGroup>
