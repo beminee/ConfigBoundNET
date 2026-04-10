@@ -204,4 +204,78 @@ public sealed class ConfigBoundGeneratorTests
         // Sanity-check uniqueness so we never regress into overwriting source.
         Assert.Equal(fileNames.Length, fileNames.Distinct().Count());
     }
+
+    [Fact]
+    public void ValidateCustom_partial_hook_is_declared_on_outer_type()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+            }
+            """;
+
+        var result = GeneratorHarness.Run(Source);
+        var generated = result.GetEmittedConfigSource();
+
+        Assert.Contains("partial void ValidateCustom(global::System.Collections.Generic.List<string> failures);", generated);
+    }
+
+    [Fact]
+    public void ValidateCustom_is_called_from_validator()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+            }
+            """;
+
+        var result = GeneratorHarness.Run(Source);
+        var generated = result.GetEmittedConfigSource();
+
+        Assert.Contains("options.ValidateCustom(failures);", generated);
+    }
+
+    [Fact]
+    public void ValidateCustom_implementation_triggers_validation_failure()
+    {
+        // The user's partial declaration implements ValidateCustom and adds
+        // a failure unconditionally. The generated Validator calls it, so
+        // resolving IOptions<T>.Value should throw.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public string Name { get; init; } = default!;
+
+                partial void ValidateCustom(global::System.Collections.Generic.List<string> failures)
+                {
+                    failures.Add("custom hook fired");
+                }
+            }
+            """;
+
+        var ex = Assert.ThrowsAny<System.Exception>(() =>
+            GeneratorHarness.CompileAndBind(
+                Source,
+                "TestConfig",
+                new System.Collections.Generic.Dictionary<string, string?> { ["Test:Name"] = "hello" }));
+
+        Assert.Contains("custom hook fired", ex.InnerException?.Message ?? ex.Message);
+    }
 }

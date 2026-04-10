@@ -155,6 +155,32 @@ Misapplied annotations are caught at **build time** with dedicated diagnostics (
 
 ---
 
+## Custom validation hook
+
+For cross-field rules that no single-property attribute can express, ConfigBoundNET emits a `partial void ValidateCustom` method on every annotated type. Implement it to add your own checks:
+
+```csharp
+[ConfigSection("Db")]
+public partial record DbConfig
+{
+    public string? ConnString { get; init; }
+    public string? ConnStringSecretRef { get; init; }
+
+    partial void ValidateCustom(List<string> failures)
+    {
+        if (ConnString is null && ConnStringSecretRef is null)
+            failures.Add("[Db] Either ConnString or ConnStringSecretRef must be set.");
+
+        if (ConnString is not null && ConnStringSecretRef is not null)
+            failures.Add("[Db] Set ConnString or ConnStringSecretRef, not both.");
+    }
+}
+```
+
+The hook runs **after** all generated checks (null/whitespace + DataAnnotations), so you can safely read already-validated properties. If you don't implement it, the C# compiler removes the call site entirely — zero runtime cost.
+
+---
+
 ## Supported property types
 
 The generator emits a **reflection-free** binder, so the set of property types it can read is fixed and explicit. Anything outside this list raises a `CB0010` warning at build time and is silently skipped at runtime (the property keeps its declared default).
@@ -332,7 +358,7 @@ ConfigBoundNET/
 # Restore + build the whole solution (generator, tests, AOT smoke, example).
 dotnet build ConfigBoundNET.sln
 
-# 35 unit + integration tests covering binding, validation, and diagnostics.
+# 38 unit + integration tests covering binding, validation, and diagnostics.
 dotnet test  tests/ConfigBoundNET.Tests/ConfigBoundNET.Tests.csproj
 ```
 
@@ -387,7 +413,7 @@ ConfigBoundNET is currently at **0.1**. The pieces below are tracked toward 1.0;
 - [x] **DataAnnotations validation.** ✅ The generator scans for `[Range]`, `[StringLength]`, `[MinLength]`, `[MaxLength]`, `[RegularExpression]`, `[Url]`, `[EmailAddress]`, `[Required]`, `[AllowedValues]`, and `[DeniedValues]` and emits explicit, reflection-free validation checks. Misapplied annotations (e.g. `[Range]` on a string) are caught at build time with CB0006–CB0009 diagnostics. Regex patterns are validated at compile time. See the DataAnnotations section above.
 - [x] **Reflection-free binding (AOT support).** ✅ The generator emits an explicit `(IConfigurationSection)` constructor on every annotated type and registers a `ConfigBoundOptionsFactory<T>` shim that calls it, replacing `ConfigurationBinder.Bind` entirely. The pipeline is now trim- and Native-AOT-friendly for the supported type set listed above.
 - [x] **AOT smoke-test workflow.** ✅ [`tests/ConfigBoundNET.AotTests`](tests/ConfigBoundNET.AotTests/) is a console app with `<IsAotCompatible>true</IsAotCompatible>` that exercises every `BindingStrategy` and asserts on the bound values. [`.github/workflows/aot.yml`](.github/workflows/aot.yml) runs the static analyzer build on every push and a full `dotnet publish` Native AOT compile on Linux x64 right after, executing the resulting native binary to confirm the round-trip. The smoke test caught and fixed one real defect during initial setup (an `IL2091` from the missing `[DynamicallyAccessedMembers]` annotation on `ConfigBoundOptionsFactory<T>`), which is exactly the kind of regression CI is now guarding against.
-- [ ] **Custom validation hook.** Generate a `partial void ValidateCustom(List<string> failures)` so users can express cross-field rules ("`ConnString` XOR `ConnStringSecretRef` must be set") without writing a separate `IValidateOptions<T>`.
+- [x] **Custom validation hook.** ✅ Every annotated type gets a `partial void ValidateCustom(List<string> failures)` declaration. Implement it on your config type to add cross-field rules; leave it unimplemented for zero cost. Called after all generated checks. See the custom validation hook section above.
 - [ ] **CodeFix providers** for CB0001 ("Add `partial` modifier") and CB0002 ("Use type name as section name"). One-click fixes inside the IDE.
 - [ ] **CI workflow** (`.github/workflows/ci.yml`): build, test, pack, attach the `.nupkg` as an artifact, publish to NuGet on tag push. Independent of the existing AOT workflow above; this one is the release pipeline.
 

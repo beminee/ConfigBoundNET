@@ -200,6 +200,15 @@ internal static class SourceEmitter
             }
         }
 
+        // ── Custom validation hook: call the partial method on the options
+        //    instance. If the user has not implemented it, the C# compiler
+        //    removes the call site entirely (zero cost). If they have, their
+        //    code runs after all generated checks so it can inspect the
+        //    already-bound, already-null-checked state.
+        writer.WriteLine();
+        writer.Write("options.ValidateCustom(failures);");
+        writer.WriteLine();
+
         writer.WriteLine();
         writer.WriteLine("return failures.Count > 0");
         writer.Indent++;
@@ -212,6 +221,19 @@ internal static class SourceEmitter
 
         writer.Indent--;
         writer.WriteLine("}");
+
+        // ── Partial method declaration for the custom validation hook.
+        //    Lives on the outer partial type (not on the sealed Validator)
+        //    so the user can implement it in their own partial declaration.
+        writer.WriteLine();
+        writer.WriteLine("/// <summary>");
+        writer.WriteLine("/// Optional hook for custom cross-field validation. Implement this");
+        writer.WriteLine("/// partial method on your config type to add validation rules that");
+        writer.WriteLine("/// cannot be expressed with DataAnnotations alone.");
+        writer.WriteLine("/// Called after all generated checks.");
+        writer.WriteLine("/// </summary>");
+        writer.WriteLine("/// <param name=\"failures\">Mutable list of failure messages. Add to it to report errors.</param>");
+        writer.WriteLine("partial void ValidateCustom(global::System.Collections.Generic.List<string> failures);");
 
         writer.Indent--;
         writer.WriteLine("}");

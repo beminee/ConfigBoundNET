@@ -38,6 +38,9 @@ var dbConfig = app.Services.GetRequiredService<IOptions<DbConfig>>().Value;
 
 System.Console.WriteLine($"[{DbConfig.SectionName}] Conn                   = {dbConfig.Conn}");
 System.Console.WriteLine($"[{DbConfig.SectionName}] CommandTimeoutSeconds  = {dbConfig.CommandTimeoutSeconds}");
+System.Console.WriteLine($"[{DbConfig.SectionName}] ReplicaConn            = {dbConfig.ReplicaConn ?? "(not set)"}");
+System.Console.WriteLine();
+System.Console.WriteLine("Validation passed — all cross-field rules satisfied.");
 
 namespace ConfigBoundNET.Example
 {
@@ -51,8 +54,9 @@ namespace ConfigBoundNET.Example
     /// </para>
     /// <list type="bullet">
     ///   <item><description><c>DbConfig.SectionName</c> — a compile-time constant equal to <c>"Db"</c>.</description></item>
-    ///   <item><description><c>DbConfig.Validator</c> — an <c>IValidateOptions&lt;DbConfig&gt;</c> that null-checks non-nullable properties.</description></item>
+    ///   <item><description><c>DbConfig.Validator</c> — an <c>IValidateOptions&lt;DbConfig&gt;</c> that null-checks non-nullable properties and runs DataAnnotations checks.</description></item>
     ///   <item><description><c>DbConfigServiceCollectionExtensions.AddDbConfig</c> — the DI helper called in <c>Program.cs</c>.</description></item>
+    ///   <item><description><c>partial void ValidateCustom</c> — a hook for cross-field validation rules that no single-property attribute can express.</description></item>
     /// </list>
     /// <para>
     /// Non-nullable reference-type properties (like <see cref="Conn"/>) are
@@ -68,5 +72,27 @@ namespace ConfigBoundNET.Example
 
         /// <summary>Command timeout in seconds. Optional; defaults to 30.</summary>
         public int CommandTimeoutSeconds { get; init; } = 30;
+
+        /// <summary>
+        /// Optional replica connection string. When set, the timeout must be
+        /// at least 5 seconds because replica failover adds latency.
+        /// </summary>
+        public string? ReplicaConn { get; init; }
+
+        /// <summary>
+        /// Cross-field validation: if a replica is configured, enforce a
+        /// minimum timeout so connections don't fail during failover.
+        /// This is the kind of rule that no single-property
+        /// <c>[Range]</c> or <c>[Required]</c> attribute can express.
+        /// </summary>
+        partial void ValidateCustom(List<string> failures)
+        {
+            if (ReplicaConn is not null && CommandTimeoutSeconds < 5)
+            {
+                failures.Add(
+                    $"[{SectionName}] When ReplicaConn is set, CommandTimeoutSeconds must be >= 5 " +
+                    $"(got {CommandTimeoutSeconds}). Replica failover adds latency.");
+            }
+        }
     }
 }
