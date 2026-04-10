@@ -398,6 +398,7 @@ Expected output:
 ```
 [Db] Conn                   = Server=localhost;Database=App;Trusted_Connection=True;
 [Db] CommandTimeoutSeconds  = 30
+[Db] ReplicaConn            = (not set)
 ```
 
 Try editing `appsettings.json` to remove the `Conn` value and re-run — the host now fails at startup with a precise, actionable error.
