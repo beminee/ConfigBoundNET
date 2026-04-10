@@ -82,7 +82,7 @@ ConfigBoundNET ships as a single analyzer package. There is no runtime dependenc
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="ConfigBoundNET" Version="0.1.0" />
+  <PackageReference Include="ConfigBoundNET" Version="1.0.0" />
 </ItemGroup>
 ```
 
@@ -408,15 +408,15 @@ Try editing `appsettings.json` to remove the `Conn` value and re-run — the hos
 
 ## Roadmap
 
-ConfigBoundNET is currently at **0.1**. The pieces below are tracked toward 1.0; PRs are welcome on any of them.
+ConfigBoundNET is currently at **v1.0.0**. The pieces below are tracked toward next major versions.
 
 ### Tier 1 — needed before 1.0
 
 - [x] **DataAnnotations validation.** ✅ The generator scans for `[Range]`, `[StringLength]`, `[MinLength]`, `[MaxLength]`, `[RegularExpression]`, `[Url]`, `[EmailAddress]`, `[Required]`, `[AllowedValues]`, and `[DeniedValues]` and emits explicit, reflection-free validation checks. Misapplied annotations (e.g. `[Range]` on a string) are caught at build time with CB0006–CB0009 diagnostics. Regex patterns are validated at compile time. See the DataAnnotations section above.
 - [x] **Reflection-free binding (AOT support).** ✅ The generator emits an explicit `(IConfigurationSection)` constructor on every annotated type and registers a `ConfigBoundOptionsFactory<T>` shim that calls it, replacing `ConfigurationBinder.Bind` entirely. The pipeline is now trim- and Native-AOT-friendly for the supported type set listed above.
-- [x] **AOT smoke-test workflow.** ✅ [`tests/ConfigBoundNET.AotTests`](tests/ConfigBoundNET.AotTests/) is a console app with `<IsAotCompatible>true</IsAotCompatible>` that exercises every `BindingStrategy` and asserts on the bound values. [`.github/workflows/aot.yml`](.github/workflows/aot.yml) runs the static analyzer build on every push and a full `dotnet publish` Native AOT compile on Linux x64 right after, executing the resulting native binary to confirm the round-trip. The smoke test caught and fixed one real defect during initial setup (an `IL2091` from the missing `[DynamicallyAccessedMembers]` annotation on `ConfigBoundOptionsFactory<T>`), which is exactly the kind of regression CI is now guarding against.
+- [x] **AOT smoke-test workflow.** ✅ [`tests/ConfigBoundNET.AotTests`](tests/ConfigBoundNET.AotTests/) is a console app with `<IsAotCompatible>true</IsAotCompatible>` that exercises every `BindingStrategy` and asserts on the bound values. [`.github/workflows/aot.yml`](.github/workflows/aot.yml) runs the static analyzer build on every push and a full `dotnet publish` Native AOT compile on Linux x64 right after, executing the resulting native binary to confirm the round-trip.
 - [x] **Custom validation hook.** ✅ Every annotated type gets a `partial void ValidateCustom(List<string> failures)` declaration. Implement it on your config type to add cross-field rules; leave it unimplemented for zero cost. Called after all generated checks. See the custom validation hook section above.
-- [x] **CodeFix providers.** ✅ Five one-click IDE lightbulb fixes: CB0001 ("Add `partial` modifier"), CB0002 ("Use `{Inferred}` as section name" — strips `Config`/`Options`/`Settings`/`Configuration` suffix), CB0003 ("Move type to namespace scope"), CB0005 ("Change to class"), CB0009 ("Remove redundant `[Required]`"). Shipped in a separate `ConfigBoundNET.CodeFixes` assembly (RS1038 requires Workspaces-dependent code live outside the generator DLL).
+- [x] **CodeFix providers.** ✅ Five one-click IDE lightbulb fixes: CB0001 ("Add `partial` modifier"), CB0002 ("Use `{Inferred}` as section name" — strips `Config`/`Options`/`Settings`/`Configuration` suffix), CB0003 ("Move type to namespace scope"), CB0005 ("Change to class"), CB0009 ("Remove redundant `[Required]`").
 - [x] **CI workflow.** ✅ [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push/PR: restore, build, test (53 tests), AOT smoke, example run, pack `.nupkg` (uploaded as artifact). On `v*` tag pushes, a second job publishes to NuGet.org and creates a GitHub Release with auto-generated release notes. Version is derived from the tag name (`v0.2.0` -> `Version=0.2.0`).
 
 ### Tier 2 — quality-of-life
