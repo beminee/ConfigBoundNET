@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!--
+    Web API example demonstrating ConfigBoundNET with a realistic configuration
+    surface: multiple sections, nested types, DataAnnotations, custom validation
+    hooks, and a controller that consumes IOptions<T> / IOptionsMonitor<T>.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>ConfigBoundNET.WebApi</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <NoWarn>$(NoWarn);CA1812;CA1852;CA1303;CA1515</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ConfigBoundNET\ConfigBoundNET.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- System.ComponentModel.Annotations provides the DataAnnotations
+         attributes the generator scans. Already transitive in most ASP.NET
+         Core apps, but listed explicitly so the example is self-contained. -->
+    <PackageReference Include="System.ComponentModel.Annotations" Version="5.0.0" />
+  </ItemGroup>
+
+</Project>
