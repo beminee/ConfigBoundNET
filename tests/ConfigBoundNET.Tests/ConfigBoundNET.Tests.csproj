@@ -30,15 +30,24 @@
 
     <!-- Roslyn drives the generator tests. -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
-    <!-- Supplies the full .NET 8 reference-assembly set so synthetic
-         compilations can resolve BCL types like System.Object reliably. -->
-    <PackageReference Include="Basic.Reference.Assemblies.Net80" Version="1.7.9" />
+    <!-- Supplies the full .NET 10 reference-assembly set so synthetic
+         compilations match the System.Runtime version that the M.E.* runtime
+         packages below were built against. Mismatched reference and runtime
+         assembly versions trigger CS1705 at compile time. -->
+    <PackageReference Include="Basic.Reference.Assemblies.Net100" Version="1.8.4" />
 
     <!-- Pulls in the reference assemblies the test compilation needs to see
-         IValidateOptions, IConfiguration, IServiceCollection, etc. -->
+         IValidateOptions, IConfiguration, IServiceCollection, etc.
+         Microsoft.Extensions.Configuration is the concrete configuration
+         provider package (gives us AddInMemoryCollection / ConfigurationBuilder).
+         Microsoft.Extensions.DependencyInjection brings in the concrete
+         ServiceCollection + BuildServiceProvider extension we use to
+         exercise the generated DI registrations end-to-end. -->
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.5" />
   </ItemGroup>
 

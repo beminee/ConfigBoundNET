@@ -1,0 +1,96 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    AOT smoke test for ConfigBoundNET.
+
+    The whole point of this project is to fail the build if any code path the
+    generator emits triggers an AOT or trim warning. We accomplish that by:
+
+      1. Setting <IsAotCompatible>true</IsAotCompatible>, which enables the
+         AOT, trim, and single-file analyzers as a bundle.
+      2. Inheriting <TreatWarningsAsErrors>true</TreatWarningsAsErrors> from
+         Directory.Build.props, so any IL2026 / IL3050 warning the analyzers
+         raise immediately becomes a build error.
+
+    The project also runs as a normal console app via `dotnet run` so we get a
+    cheap runtime smoke test on top of the static analysis. CI then layers
+    `dotnet publish -p:PublishAot=true` on top to do the full Native AOT
+    validation, but that is only required on machines with the AOT toolchain
+    installed; the regular build is sufficient for day-to-day development.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ConfigBoundNET.AotTests</RootNamespace>
+    <IsPackable>false</IsPackable>
+
+    <!-- Enables EnableAotAnalyzer, EnableTrimAnalyzer, and
+         EnableSingleFileAnalyzer in one go. Combined with the repo-wide
+         TreatWarningsAsErrors, the build fails on the first IL2xxx / IL3xxx
+         warning surfaced from generated code. -->
+    <IsAotCompatible>true</IsAotCompatible>
+
+    <!-- PublishAot is gated on the IsPublishing condition (set automatically
+         by MSBuild during `dotnet publish`). This keeps day-to-day
+         `dotnet build` fast and free of AOT-toolchain requirements while
+         still doing the full Native AOT compilation during publish.
+
+         We deliberately set it inside the csproj rather than via a CLI
+         -p:PublishAot=true flag, because the latter becomes an MSBuild
+         global property that propagates through P2P references into the
+         netstandard2.0 generator project. The generator cannot itself be
+         AOT-compiled; trying to do so triggers NETSDK1207. By keeping the
+         property project-local, only this project sees it.
+
+         To run the full AOT publish locally:
+             dotnet publish tests/ConfigBoundNET.AotTests/ConfigBoundNET.AotTests.csproj -c Release
+         (no -p:PublishAot flag needed) -->
+    <PublishAot Condition="'$(_IsPublishing)' == 'true'">true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <!-- This project intentionally exercises every BindingStrategy through a
+         single annotated record. CA1812 (uninstantiated internal class) and
+         CA1852 (could be sealed) are both false positives for IOptions binding
+         targets that are constructed reflectively at startup, mirroring the
+         suppression we already use in the example project. -->
+    <NoWarn>$(NoWarn);CA1812;CA1852</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Generator is referenced as an analyzer (no runtime DLL). This mirrors
+         exactly how a real consumer would reference the shipped NuGet package,
+         so any AOT issue we hit here would also hit them.
+
+         GlobalPropertiesToRemove strips PublishAot / PublishTrimmed before
+         MSBuild walks into the generator project. Without it, `dotnet publish
+         -p:PublishAot=true` would propagate that property through the P2P
+         reference and fail with NETSDK1207, because the generator targets
+         netstandard2.0 and cannot itself be AOT-compiled — it runs inside the
+         Roslyn host at compile time, not in the consumer's runtime. -->
+    <ProjectReference Include="..\..\src\ConfigBoundNET\ConfigBoundNET.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      GlobalPropertiesToRemove="PublishAot;PublishTrimmed;PublishSingleFile;RuntimeIdentifier" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The generated code references types from these packages.
+         Microsoft.Extensions.Options.ConfigurationExtensions is required
+         because that's where ConfigurationChangeTokenSource<T> lives — the
+         type the generated DI extension uses for IOptionsMonitor reload-on-change. -->
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Copy the smoke-test config next to the executable. -->
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

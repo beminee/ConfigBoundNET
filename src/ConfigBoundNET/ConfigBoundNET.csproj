@@ -15,6 +15,16 @@
     <IsRoslynComponent>true</IsRoslynComponent>
     <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
 
+    <!-- Force PublishAot=false on this project even if a downstream consumer
+         (like the AotTests project) is building with PublishAot=true. The
+         generator targets netstandard2.0 because that is the TFM Roslyn
+         loads source generators from; ahead-of-time compilation makes no
+         sense for a compile-time analyzer. Without this override, MSBuild
+         propagates PublishAot through P2P references during restore and
+         the build fails with NETSDK1207. -->
+    <PublishAot>false</PublishAot>
+    <IsAotCompatible>false</IsAotCompatible>
+
     <!-- Generators do not ship a runtime DLL in lib/; they live under analyzers/.
          These flags keep the build output and its transitive dependencies out
          of consumers' runtime closures. -->

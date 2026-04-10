@@ -63,11 +63,88 @@ internal enum ConfigTypeKind
 /// Whether the property type is exactly <see cref="string"/>. Strings get a stricter
 /// <c>IsNullOrWhiteSpace</c> check rather than a plain null check.
 /// </param>
+/// <param name="Binding">
+/// How the AOT-safe emitted binder should read this property out of an
+/// <c>IConfigurationSection</c>. Drives <c>SourceEmitter.WriteBindMethod</c>.
+/// </param>
+/// <param name="IsNullableValueType">
+/// <see langword="true"/> when the property is a <c>Nullable&lt;T&gt;</c>. Used by the
+/// emitter so it can write <c>null</c> back when the configuration key is absent.
+/// </param>
+/// <param name="NestedTypeFullyQualifiedName">
+/// For <see cref="BindingStrategy.NestedConfig"/>, the fully qualified name of the
+/// nested config type (which must itself be <c>[ConfigSection]</c>-annotated and will
+/// therefore have its own generated <c>Bind</c> method to call into).
+/// </param>
+/// <param name="EnumFullyQualifiedName">
+/// For <see cref="BindingStrategy.Enum"/>, the fully qualified enum type name passed
+/// as the type argument to <c>System.Enum.TryParse&lt;T&gt;</c>.
+/// </param>
+/// <param name="ParseTypeKeyword">
+/// For <see cref="BindingStrategy.Integer"/> and <see cref="BindingStrategy.FloatingPoint"/>,
+/// the C# keyword (e.g. <c>int</c>, <c>long</c>, <c>double</c>) used to call the
+/// matching static <c>TryParse</c> overload. Null for everything else.
+/// </param>
 internal sealed record ConfigPropertyModel(
     string Name,
     bool IsRequired,
     bool IsReferenceType,
-    bool IsString) : IEquatable<ConfigPropertyModel>;
+    bool IsString,
+    BindingStrategy Binding,
+    bool IsNullableValueType,
+    string? NestedTypeFullyQualifiedName,
+    string? EnumFullyQualifiedName,
+    string? ParseTypeKeyword) : IEquatable<ConfigPropertyModel>;
+
+/// <summary>
+/// How the generated, reflection-free binder should read a property out of an
+/// <c>IConfigurationSection</c>.
+/// </summary>
+/// <remarks>
+/// Each value maps one-to-one to a branch inside
+/// <see cref="SourceEmitter"/>'s <c>WriteBindAssignment</c>. Adding a new
+/// supported type means: extend this enum, teach
+/// <see cref="ModelBuilder.ClassifyBinding"/> to recognise the symbol, and
+/// teach the emitter to render the assignment.
+/// </remarks>
+internal enum BindingStrategy
+{
+    /// <summary>The property type is not in the supported set; CB0010 is raised and binding is skipped.</summary>
+    Unsupported = 0,
+
+    /// <summary><see cref="string"/> — copied verbatim from <c>section["X"]</c>.</summary>
+    String,
+
+    /// <summary><see cref="bool"/> via <see cref="bool.TryParse(string, out bool)"/>.</summary>
+    Boolean,
+
+    /// <summary><see cref="byte"/> / <see cref="sbyte"/> / <see cref="short"/> / <see cref="ushort"/> / <see cref="int"/> / <see cref="uint"/> / <see cref="long"/> / <see cref="ulong"/>.</summary>
+    Integer,
+
+    /// <summary><see cref="float"/> / <see cref="double"/> / <see cref="decimal"/>.</summary>
+    FloatingPoint,
+
+    /// <summary><see cref="System.Guid"/> via <see cref="System.Guid.TryParse(string, out System.Guid)"/>.</summary>
+    Guid,
+
+    /// <summary><see cref="System.TimeSpan"/> via <see cref="System.TimeSpan.TryParse(string, System.IFormatProvider, out System.TimeSpan)"/>.</summary>
+    TimeSpan,
+
+    /// <summary><see cref="System.DateTime"/> via <see cref="System.DateTime.TryParse(string, System.IFormatProvider, System.Globalization.DateTimeStyles, out System.DateTime)"/>.</summary>
+    DateTime,
+
+    /// <summary><see cref="System.DateTimeOffset"/>.</summary>
+    DateTimeOffset,
+
+    /// <summary><see cref="System.Uri"/> via <see cref="System.Uri.TryCreate(string, System.UriKind, out System.Uri)"/>.</summary>
+    Uri,
+
+    /// <summary>Any user-defined enum — bound via <c>System.Enum.TryParse&lt;TEnum&gt;</c> which is AOT-safe.</summary>
+    Enum,
+
+    /// <summary>A nested complex config type that is itself <c>[ConfigSection]</c>-annotated; bound by recursing into its generated <c>Bind</c> method.</summary>
+    NestedConfig,
+}
 
 /// <summary>
 /// The output of <see cref="ModelBuilder.Build"/>. Diagnostics are represented as
@@ -142,6 +219,7 @@ internal static class DescriptorLookup
         "CB0003" => DiagnosticDescriptors.NestedTypeNotSupported,
         "CB0004" => DiagnosticDescriptors.NoBindableMembers,
         "CB0005" => DiagnosticDescriptors.InvalidTargetKind,
+        "CB0010" => DiagnosticDescriptors.UnsupportedBindingType,
         _ => throw new ArgumentOutOfRangeException(nameof(id), id, "Unknown diagnostic id."),
     };
 }
@@ -262,11 +340,29 @@ internal static class ModelBuilder
             var isString = property.Type.SpecialType == SpecialType.System_String;
             var isRequired = IsRequired(property);
 
+            // Classify how this property will be bound. Unsupported types
+            // produce a CB0010 warning and are skipped at emit time, so the
+            // user still gets a working binder for the rest of the type.
+            var classification = ClassifyBinding(property.Type);
+
+            if (classification.Strategy == BindingStrategy.Unsupported)
+            {
+                diagnostics.Add(new DiagnosticInfo(
+                    DiagnosticDescriptors.UnsupportedBindingType.Id,
+                    LocationInfo.From(syntax),
+                    new EquatableArray<string>(new[] { property.Name, property.Type.ToDisplayString() })));
+            }
+
             properties.Add(new ConfigPropertyModel(
                 Name: property.Name,
                 IsRequired: isRequired,
                 IsReferenceType: isReferenceType,
-                IsString: isString));
+                IsString: isString,
+                Binding: classification.Strategy,
+                IsNullableValueType: classification.IsNullableValueType,
+                NestedTypeFullyQualifiedName: classification.NestedTypeFullyQualifiedName,
+                EnumFullyQualifiedName: classification.EnumFullyQualifiedName,
+                ParseTypeKeyword: classification.ParseTypeKeyword));
         }
 
         if (properties.Count == 0)
@@ -333,4 +429,144 @@ internal static class ModelBuilder
         // NullableAnnotation.Annotated → explicit nullable (`string?`) → optional.
         return property.NullableAnnotation != NullableAnnotation.Annotated;
     }
+
+    /// <summary>
+    /// Decides how the reflection-free binder should populate a property of the
+    /// given type, returning a flat record so the result can flow into the
+    /// equatable property model without retaining any Roslyn symbols.
+    /// </summary>
+    /// <remarks>
+    /// <para>The classifier is the only place that touches Roslyn types when
+    /// figuring out the binding strategy. Once it returns, the rest of the
+    /// pipeline operates on plain strings.</para>
+    /// <para>Returns <see cref="BindingStrategy.Unsupported"/> for any type
+    /// the emitter does not yet know how to bind — the caller raises
+    /// <see cref="DiagnosticDescriptors.UnsupportedBindingType"/> and falls
+    /// through. Adding new supported types is intentionally a one-line change
+    /// in this method plus a matching branch in <see cref="SourceEmitter"/>.</para>
+    /// </remarks>
+    private static BindingClassification ClassifyBinding(ITypeSymbol type)
+    {
+        // Strip Nullable<T> first so we classify the underlying value type and
+        // simply remember that the property accepts null.
+        var isNullableValueType = false;
+        if (type is INamedTypeSymbol named &&
+            named.IsGenericType &&
+            named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
+        {
+            isNullableValueType = true;
+            type = named.TypeArguments[0];
+        }
+
+        // ── Primitive / well-known BCL types ──────────────────────────────
+        switch (type.SpecialType)
+        {
+            case SpecialType.System_String:
+                return new BindingClassification(BindingStrategy.String, false, null, null, null);
+
+            case SpecialType.System_Boolean:
+                return new BindingClassification(BindingStrategy.Boolean, isNullableValueType, null, null, "bool");
+
+            case SpecialType.System_Byte:
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "byte");
+            case SpecialType.System_SByte:
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "sbyte");
+            case SpecialType.System_Int16:
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "short");
+            case SpecialType.System_UInt16:
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "ushort");
+            case SpecialType.System_Int32:
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "int");
+            case SpecialType.System_UInt32:
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "uint");
+            case SpecialType.System_Int64:
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "long");
+            case SpecialType.System_UInt64:
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "ulong");
+
+            case SpecialType.System_Single:
+                return new BindingClassification(BindingStrategy.FloatingPoint, isNullableValueType, null, null, "float");
+            case SpecialType.System_Double:
+                return new BindingClassification(BindingStrategy.FloatingPoint, isNullableValueType, null, null, "double");
+            case SpecialType.System_Decimal:
+                return new BindingClassification(BindingStrategy.FloatingPoint, isNullableValueType, null, null, "decimal");
+        }
+
+        // ── Enums (matched before the named-type sniff so System.Enum subtypes win). ──
+        if (type.TypeKind == TypeKind.Enum)
+        {
+            return new BindingClassification(
+                BindingStrategy.Enum,
+                isNullableValueType,
+                NestedTypeFullyQualifiedName: null,
+                EnumFullyQualifiedName: type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                ParseTypeKeyword: null);
+        }
+
+        // ── Named non-special types: Guid, TimeSpan, DateTime, Uri, nested config. ──
+        var fullName = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        switch (fullName)
+        {
+            case "global::System.Guid":
+                return new BindingClassification(BindingStrategy.Guid, isNullableValueType, null, null, null);
+
+            case "global::System.TimeSpan":
+                return new BindingClassification(BindingStrategy.TimeSpan, isNullableValueType, null, null, null);
+
+            case "global::System.DateTime":
+                return new BindingClassification(BindingStrategy.DateTime, isNullableValueType, null, null, null);
+
+            case "global::System.DateTimeOffset":
+                return new BindingClassification(BindingStrategy.DateTimeOffset, isNullableValueType, null, null, null);
+
+            case "global::System.Uri":
+                // Uri is a reference type, so the "nullable" form is just `Uri?`,
+                // not Nullable<Uri>. isNullableValueType therefore stays false.
+                return new BindingClassification(BindingStrategy.Uri, false, null, null, null);
+        }
+
+        // ── Nested complex configuration types. We accept any user-defined
+        //    class or record annotated with [ConfigSection]: it will have its
+        //    own generated Bind method we can call into. Anything else is
+        //    classified Unsupported and produces CB0010.
+        if (type is INamedTypeSymbol nestedNamed &&
+            (nestedNamed.TypeKind == TypeKind.Class) &&
+            HasConfigSectionAttribute(nestedNamed))
+        {
+            return new BindingClassification(
+                BindingStrategy.NestedConfig,
+                IsNullableValueType: false,
+                NestedTypeFullyQualifiedName: nestedNamed.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                EnumFullyQualifiedName: null,
+                ParseTypeKeyword: null);
+        }
+
+        return new BindingClassification(BindingStrategy.Unsupported, false, null, null, null);
+    }
+
+    /// <summary>Returns true when <paramref name="type"/> declares a [ConfigSection] attribute.</summary>
+    private static bool HasConfigSectionAttribute(INamedTypeSymbol type)
+    {
+        foreach (var attr in type.GetAttributes())
+        {
+            if (attr.AttributeClass?.ToDisplayString() == "ConfigBoundNET.ConfigSectionAttribute")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }
+
+/// <summary>
+/// Lightweight return value from <c>ModelBuilder.ClassifyBinding</c>. A struct
+/// rather than a record so we don't allocate one per property during the
+/// hot incremental rebuild path.
+/// </summary>
+internal readonly record struct BindingClassification(
+    BindingStrategy Strategy,
+    bool IsNullableValueType,
+    string? NestedTypeFullyQualifiedName,
+    string? EnumFullyQualifiedName,
+    string? ParseTypeKeyword);

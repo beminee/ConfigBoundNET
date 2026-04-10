@@ -72,7 +72,8 @@ internal static class SourceEmitter
 
     /// <summary>
     /// Writes the partial record / class declaration that adds the
-    /// <c>SectionName</c> constant and nested <c>Validator</c> class.
+    /// <c>SectionName</c> constant, the static reflection-free <c>Bind</c>
+    /// helper, and the nested <c>Validator</c> class.
     /// </summary>
     private static void WritePartialTypeWithValidator(IndentedTextWriter writer, ConfigSectionModel model)
     {
@@ -94,6 +95,12 @@ internal static class SourceEmitter
         writer.Write("public const string SectionName = \"");
         writer.Write(Escape(model.SectionName));
         writer.WriteLine("\";");
+        writer.WriteLine();
+
+        // ── Static Bind method: AOT-safe, reflection-free configuration binder.
+        //    Lives inside the partial type so it can write to init-only and
+        //    private setters without going through reflection.
+        WriteBindMethod(writer, model);
         writer.WriteLine();
 
         // ── Nested Validator class implementing IValidateOptions<T>.
@@ -245,6 +252,19 @@ internal static class SourceEmitter
         writer.WriteLine("if (configuration is null) throw new global::System.ArgumentNullException(nameof(configuration));");
         writer.WriteLine();
 
+        // ── Capture the target section once so the closures below all share
+        //    the same live reference. Each property read through `section` is
+        //    live, which is what makes IOptionsMonitor reload-on-change work.
+        writer.Write("var section = configuration.GetSection(");
+        writer.Write(model.TypeName);
+        writer.WriteLine(".SectionName);");
+        writer.WriteLine();
+
+        // ── Make sure the core Options infrastructure is registered. AddOptions()
+        //    is idempotent, so this is safe regardless of call order.
+        writer.WriteLine("global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions(services);");
+        writer.WriteLine();
+
         // ── Register the generated validator idempotently. TryAddEnumerable
         //    prevents duplicate Validator registrations if the user calls
         //    Add{TypeName}() more than once.
@@ -260,18 +280,64 @@ internal static class SourceEmitter
         writer.Indent--;
         writer.WriteLine();
 
-        // ── Bind the section. We use the Microsoft.Extensions.Options.ConfigurationExtensions
-        //    package's Configure<T>(IConfiguration) overload, which internally wires up
-        //    both IConfigureOptions<T> and IOptionsChangeTokenSource<T> (so the options
-        //    update when configuration reloads).
-        writer.Write("global::Microsoft.Extensions.DependencyInjection.OptionsConfigurationServiceCollectionExtensions.Configure<");
+        // ── Replace the default OptionsFactory<T> with our shim. The shim
+        //    overrides CreateInstance to call the generated constructor —
+        //    that's the only AOT-safe way to populate `init`-only properties
+        //    without going through ConfigurationBinder + reflection. The base
+        //    OptionsFactory<T> still runs every IConfigureOptions / IPostConfigureOptions
+        //    / IValidateOptions registered against the type, so users can layer
+        //    behaviour on top normally (with the caveat that those callbacks
+        //    cannot mutate `init`-only properties — a C# language rule).
+        writer.Write("global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.Replace(");
+        writer.WriteLine();
+        writer.Indent++;
+        writer.WriteLine("services,");
+        writer.Write("global::Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Singleton<global::Microsoft.Extensions.Options.IOptionsFactory<");
+        writer.Write(model.TypeName);
+        writer.WriteLine(">>(sp =>");
+        writer.Indent++;
+        writer.Write("new global::ConfigBoundNET.ConfigBoundOptionsFactory<");
         writer.Write(model.TypeName);
         writer.WriteLine(">(");
         writer.Indent++;
-        writer.WriteLine("services,");
-        writer.Write("configuration.GetSection(");
+        writer.Write("global::Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetServices<global::Microsoft.Extensions.Options.IConfigureOptions<");
         writer.Write(model.TypeName);
-        writer.WriteLine(".SectionName));");
+        writer.WriteLine(">>(sp),");
+        writer.Write("global::Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetServices<global::Microsoft.Extensions.Options.IPostConfigureOptions<");
+        writer.Write(model.TypeName);
+        writer.WriteLine(">>(sp),");
+        writer.Write("global::Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetServices<global::Microsoft.Extensions.Options.IValidateOptions<");
+        writer.Write(model.TypeName);
+        writer.WriteLine(">>(sp),");
+        writer.Write("_ => new ");
+        writer.Write(model.TypeName);
+        writer.WriteLine("(section))));");
+        writer.Indent--;
+        writer.Indent--;
+        writer.Indent--;
+        writer.WriteLine();
+
+        // ── Hot-reload support: forwarding the section's change token into
+        //    the Options framework is what makes IOptionsMonitor<T> react to
+        //    file edits or other IConfigurationProvider reloads. This is the
+        //    same registration the legacy Configure<T>(IConfiguration) made
+        //    under the hood — we just keep it instead of relying on it.
+        writer.Write("global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddEnumerable(");
+        writer.WriteLine();
+        writer.Indent++;
+        writer.WriteLine("services,");
+        writer.Write("global::Microsoft.Extensions.DependencyInjection.ServiceDescriptor.Singleton<global::Microsoft.Extensions.Options.IOptionsChangeTokenSource<");
+        writer.Write(model.TypeName);
+        writer.WriteLine(">>(");
+        writer.Indent++;
+        writer.Write("new global::Microsoft.Extensions.Options.ConfigurationChangeTokenSource<");
+        writer.Write(model.TypeName);
+        writer.WriteLine(">(");
+        writer.Indent++;
+        writer.WriteLine("global::Microsoft.Extensions.Options.Options.DefaultName,");
+        writer.WriteLine("section)));");
+        writer.Indent--;
+        writer.Indent--;
         writer.Indent--;
         writer.WriteLine();
 
@@ -283,6 +349,392 @@ internal static class SourceEmitter
         writer.Indent--;
         writer.WriteLine("}");
     }
+
+    /// <summary>
+    /// Writes a constructor overload that builds the options instance directly
+    /// from an <c>IConfigurationSection</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the heart of the AOT-safe path. By emitting one explicit
+    /// assignment per property — rather than calling
+    /// <c>ConfigurationBinder.Bind</c> — we eliminate every reflection and
+    /// runtime-codegen call from the binding pipeline. The resulting code is
+    /// fully trim- and Native-AOT-friendly.
+    /// </para>
+    /// <para>
+    /// We emit a <em>constructor</em> rather than a static method because C#
+    /// only permits writes to <c>init</c>-only properties from object
+    /// initializers, instance constructors, and other <c>init</c> accessors.
+    /// A static method on the same type would not qualify, so the constructor
+    /// approach is the only AOT-friendly way to populate <c>init</c>-only
+    /// records.
+    /// </para>
+    /// <para>
+    /// The constructor deliberately does <em>not</em> chain to <c>: this()</c>.
+    /// Declaring an explicit constructor on a record suppresses the compiler's
+    /// auto-generated parameterless constructor, so a <c>: this()</c> chain
+    /// would reference a constructor that no longer exists. Field initializers
+    /// (<c>= 30</c>, etc.) still run as the prologue of any constructor that
+    /// has no <c>: this(...)</c> chain, so user-supplied defaults survive
+    /// without needing the chain.
+    /// </para>
+    /// </remarks>
+    private static void WriteBindMethod(IndentedTextWriter writer, ConfigSectionModel model)
+    {
+        writer.WriteLine("/// <summary>");
+        writer.WriteLine("/// Reflection-free constructor generated by ConfigBoundNET.");
+        writer.WriteLine("/// Reads values from the supplied configuration section and copies");
+        writer.WriteLine("/// them into a new instance, preserving any field-initializer defaults");
+        writer.WriteLine("/// for keys that are absent from the section.");
+        writer.WriteLine("/// </summary>");
+        writer.WriteLine("/// <param name=\"section\">The configuration section to read from.</param>");
+
+        writer.Write("public ");
+        writer.Write(model.TypeName);
+        writer.WriteLine("(global::Microsoft.Extensions.Configuration.IConfigurationSection section)");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        writer.WriteLine("if (section is null) throw new global::System.ArgumentNullException(nameof(section));");
+
+        if (model.Properties.Length > 0)
+        {
+            writer.WriteLine();
+        }
+
+        foreach (var prop in model.Properties)
+        {
+            WriteBindAssignment(writer, prop);
+        }
+
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Emits the per-property assignment block inside <c>Bind</c> for a single
+    /// <see cref="ConfigPropertyModel"/>, dispatching on its
+    /// <see cref="BindingStrategy"/>.
+    /// </summary>
+    /// <remarks>
+    /// All branches share the same shape:
+    /// <list type="number">
+    ///   <item><description>Read the raw string (or sub-section) from configuration.</description></item>
+    ///   <item><description>If absent, leave the property at whatever default the user declared.</description></item>
+    ///   <item><description>If present, parse it with the appropriate culture-invariant
+    ///   <c>TryParse</c>; on failure, leave the property alone (validation
+    ///   will fail later if it was required).</description></item>
+    /// </list>
+    /// </remarks>
+    private static void WriteBindAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        switch (prop.Binding)
+        {
+            case BindingStrategy.Unsupported:
+                // CB0010 was already raised in the model builder; emit a comment
+                // so the generated source explains the gap to anyone reading it.
+                writer.Write("// Skipped property '");
+                writer.Write(prop.Name);
+                writer.WriteLine("' (CB0010): type is not bindable by ConfigBoundNET.");
+                return;
+
+            case BindingStrategy.String:
+                EmitStringAssignment(writer, prop);
+                return;
+
+            case BindingStrategy.Boolean:
+            case BindingStrategy.Integer:
+            case BindingStrategy.FloatingPoint:
+                EmitPrimitiveTryParse(writer, prop);
+                return;
+
+            case BindingStrategy.Guid:
+                EmitTryParseInvariant(writer, prop, "global::System.Guid");
+                return;
+
+            case BindingStrategy.TimeSpan:
+                EmitTryParseInvariant(writer, prop, "global::System.TimeSpan");
+                return;
+
+            case BindingStrategy.DateTime:
+                EmitDateTimeAssignment(writer, prop, "global::System.DateTime");
+                return;
+
+            case BindingStrategy.DateTimeOffset:
+                EmitDateTimeAssignment(writer, prop, "global::System.DateTimeOffset");
+                return;
+
+            case BindingStrategy.Uri:
+                EmitUriAssignment(writer, prop);
+                return;
+
+            case BindingStrategy.Enum:
+                EmitEnumAssignment(writer, prop);
+                return;
+
+            case BindingStrategy.NestedConfig:
+                EmitNestedAssignment(writer, prop);
+                return;
+        }
+    }
+
+    /// <summary>String: copy the raw value verbatim if present.</summary>
+    private static void EmitStringAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var raw = LocalName(prop.Name, "Raw");
+
+        writer.Write("var ");
+        writer.Write(raw);
+        writer.Write(" = section[\"");
+        writer.Write(prop.Name);
+        writer.WriteLine("\"];");
+
+        writer.Write("if (");
+        writer.Write(raw);
+        writer.WriteLine(" is not null)");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("this.");
+        writer.Write(prop.Name);
+        writer.Write(" = ");
+        writer.Write(raw);
+        writer.WriteLine(";");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Primitive types whose <c>TryParse</c> overload accepts an
+    /// <see cref="System.Globalization.NumberStyles"/> + <see cref="System.IFormatProvider"/>
+    /// pair (or, in the case of <c>bool</c>, no extra arguments).
+    /// </summary>
+    private static void EmitPrimitiveTryParse(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var keyword = prop.ParseTypeKeyword!;
+        var raw = LocalName(prop.Name, "Raw");
+        var parsed = LocalName(prop.Name, "Parsed");
+
+        writer.Write("var ");
+        writer.Write(raw);
+        writer.Write(" = section[\"");
+        writer.Write(prop.Name);
+        writer.WriteLine("\"];");
+
+        if (prop.Binding == BindingStrategy.Boolean)
+        {
+            // bool.TryParse takes (string, out bool) only.
+            writer.Write("if (");
+            writer.Write(raw);
+            writer.Write(" is not null && bool.TryParse(");
+            writer.Write(raw);
+            writer.Write(", out var ");
+            writer.Write(parsed);
+            writer.WriteLine("))");
+        }
+        else
+        {
+            // Numeric: always parse with the invariant culture so config files
+            // are portable across locales.
+            var styles = prop.Binding == BindingStrategy.Integer
+                ? "global::System.Globalization.NumberStyles.Integer"
+                : "global::System.Globalization.NumberStyles.Float";
+
+            writer.Write("if (");
+            writer.Write(raw);
+            writer.Write(" is not null && ");
+            writer.Write(keyword);
+            writer.Write(".TryParse(");
+            writer.Write(raw);
+            writer.Write(", ");
+            writer.Write(styles);
+            writer.Write(", global::System.Globalization.CultureInfo.InvariantCulture, out var ");
+            writer.Write(parsed);
+            writer.WriteLine("))");
+        }
+
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("this.");
+        writer.Write(prop.Name);
+        writer.Write(" = ");
+        writer.Write(parsed);
+        writer.WriteLine(";");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Guid / TimeSpan: invariant-culture <c>TryParse</c>.</summary>
+    private static void EmitTryParseInvariant(IndentedTextWriter writer, ConfigPropertyModel prop, string fullyQualifiedType)
+    {
+        var raw = LocalName(prop.Name, "Raw");
+        var parsed = LocalName(prop.Name, "Parsed");
+
+        writer.Write("var ");
+        writer.Write(raw);
+        writer.Write(" = section[\"");
+        writer.Write(prop.Name);
+        writer.WriteLine("\"];");
+
+        writer.Write("if (");
+        writer.Write(raw);
+        writer.Write(" is not null && ");
+        writer.Write(fullyQualifiedType);
+        writer.Write(".TryParse(");
+        writer.Write(raw);
+        writer.Write(", global::System.Globalization.CultureInfo.InvariantCulture, out var ");
+        writer.Write(parsed);
+        writer.WriteLine("))");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("this.");
+        writer.Write(prop.Name);
+        writer.Write(" = ");
+        writer.Write(parsed);
+        writer.WriteLine(";");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>DateTime / DateTimeOffset: invariant culture + roundtrip kind.</summary>
+    private static void EmitDateTimeAssignment(IndentedTextWriter writer, ConfigPropertyModel prop, string fullyQualifiedType)
+    {
+        var raw = LocalName(prop.Name, "Raw");
+        var parsed = LocalName(prop.Name, "Parsed");
+
+        writer.Write("var ");
+        writer.Write(raw);
+        writer.Write(" = section[\"");
+        writer.Write(prop.Name);
+        writer.WriteLine("\"];");
+
+        writer.Write("if (");
+        writer.Write(raw);
+        writer.Write(" is not null && ");
+        writer.Write(fullyQualifiedType);
+        writer.Write(".TryParse(");
+        writer.Write(raw);
+        writer.Write(", global::System.Globalization.CultureInfo.InvariantCulture, global::System.Globalization.DateTimeStyles.RoundtripKind, out var ");
+        writer.Write(parsed);
+        writer.WriteLine("))");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("this.");
+        writer.Write(prop.Name);
+        writer.Write(" = ");
+        writer.Write(parsed);
+        writer.WriteLine(";");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Uri: <c>Uri.TryCreate</c> with <c>UriKind.Absolute</c>.</summary>
+    private static void EmitUriAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var raw = LocalName(prop.Name, "Raw");
+        var parsed = LocalName(prop.Name, "Parsed");
+
+        writer.Write("var ");
+        writer.Write(raw);
+        writer.Write(" = section[\"");
+        writer.Write(prop.Name);
+        writer.WriteLine("\"];");
+
+        writer.Write("if (");
+        writer.Write(raw);
+        writer.Write(" is not null && global::System.Uri.TryCreate(");
+        writer.Write(raw);
+        writer.Write(", global::System.UriKind.Absolute, out var ");
+        writer.Write(parsed);
+        writer.WriteLine("))");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("this.");
+        writer.Write(prop.Name);
+        writer.Write(" = ");
+        writer.Write(parsed);
+        writer.WriteLine(";");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Enums: <c>Enum.TryParse&lt;T&gt;</c> is annotated AOT-safe by the BCL.</summary>
+    private static void EmitEnumAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var raw = LocalName(prop.Name, "Raw");
+        var parsed = LocalName(prop.Name, "Parsed");
+        var enumType = prop.EnumFullyQualifiedName!;
+
+        writer.Write("var ");
+        writer.Write(raw);
+        writer.Write(" = section[\"");
+        writer.Write(prop.Name);
+        writer.WriteLine("\"];");
+
+        writer.Write("if (");
+        writer.Write(raw);
+        writer.Write(" is not null && global::System.Enum.TryParse<");
+        writer.Write(enumType);
+        writer.Write(">(");
+        writer.Write(raw);
+        writer.Write(", ignoreCase: true, out var ");
+        writer.Write(parsed);
+        writer.WriteLine("))");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("this.");
+        writer.Write(prop.Name);
+        writer.Write(" = ");
+        writer.Write(parsed);
+        writer.WriteLine(";");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Nested config types: invoke the inner type's generated
+    /// <c>(IConfigurationSection)</c> constructor. The inner type is
+    /// guaranteed to have one because the classifier only returns
+    /// <see cref="BindingStrategy.NestedConfig"/> when the type is itself
+    /// <c>[ConfigSection]</c>-annotated.
+    /// </summary>
+    private static void EmitNestedAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var subsection = LocalName(prop.Name, "Section");
+        var nestedType = prop.NestedTypeFullyQualifiedName!;
+
+        writer.Write("var ");
+        writer.Write(subsection);
+        writer.Write(" = section.GetSection(\"");
+        writer.Write(prop.Name);
+        writer.WriteLine("\");");
+
+        writer.Write("if (global::Microsoft.Extensions.Configuration.ConfigurationExtensions.Exists(");
+        writer.Write(subsection);
+        writer.WriteLine("))");
+        writer.WriteLine("{");
+        writer.Indent++;
+        // We're in a constructor, so writing `init`-only properties on `this`
+        // is allowed. Construct the nested instance via its own generated
+        // (IConfigurationSection)-taking constructor for the same reason.
+        writer.Write("this.");
+        writer.Write(prop.Name);
+        writer.Write(" = new ");
+        writer.Write(nestedType);
+        writer.Write('(');
+        writer.Write(subsection);
+        writer.WriteLine(");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Builds a deterministic local-variable name for a property. We prefix
+    /// with <c>_cb_</c> so the locals can never collide with another property
+    /// or a user-defined identifier visible in the partial type's scope.
+    /// </summary>
+    private static string LocalName(string propertyName, string suffix) =>
+        "_cb_" + propertyName + suffix;
 
     /// <summary>
     /// Escapes a string for safe inclusion inside a C# double-quoted literal.

@@ -86,9 +86,12 @@ public sealed class ConfigBoundGeneratorTests
         var result = GeneratorHarness.Run(Source);
         var generated = result.GetEmittedConfigSource();
 
-        // The optional property should not produce a null/empty check — only
+        // The optional property must still be *bound* (so users get the value
+        // when configuration provides one), but it must not appear in the
+        // generated validator's IsNullOrWhiteSpace / null-check pass — only
         // non-nullable reference types are validated.
-        Assert.DoesNotContain("options.OptionalName", generated);
+        Assert.DoesNotContain("IsNullOrWhiteSpace(options.OptionalName)", generated);
+        Assert.DoesNotContain("options.OptionalName is null", generated);
     }
 
     [Fact]
@@ -107,13 +110,10 @@ public sealed class ConfigBoundGeneratorTests
 
         Assert.Contains(result.Diagnostics, d => d.Id == "CB0001");
 
-        // When the type fails validation we should *not* emit a generated file
-        // beyond the attribute itself — otherwise the user would see a second
-        // compile error masking the real one.
-        var nonAttributeFiles = result.GeneratedTrees
-            .Where(t => !t.FilePath.EndsWith(AttributeSource.HintName, System.StringComparison.Ordinal))
-            .ToArray();
-        Assert.Empty(nonAttributeFiles);
+        // When the type fails validation we should *not* emit any per-type
+        // output (only the post-init attribute + OptionsFactory helper),
+        // otherwise the user would see a second compile error masking the real one.
+        Assert.Empty(result.NonPostInitGeneratedTrees());
     }
 
     [Fact]
