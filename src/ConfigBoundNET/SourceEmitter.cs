@@ -120,6 +120,11 @@ internal static class SourceEmitter
         writer.WriteLine("{");
         writer.Indent++;
 
+        // ── Emit precompiled Regex fields for [RegularExpression] and
+        //    [EmailAddress] annotations. Declared as static readonly so the
+        //    regex is compiled once, not on every Validate call.
+        WriteRegexFields(writer, model);
+
         writer.Write("public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, ");
         writer.Write(model.TypeName);
         writer.WriteLine(" options)");
@@ -180,7 +185,19 @@ internal static class SourceEmitter
                 writer.WriteLine("}");
             }
             // Value types: no runtime null check; the binder supplies defaults.
-            // DataAnnotations or custom validators can layer additional rules.
+            // DataAnnotations validation provides value-type checks below.
+        }
+
+        // ── DataAnnotations checks, emitted after the null/whitespace pass
+        //    so the user sees the "required" error first when a value is
+        //    missing, and the annotation checks (all null-guarded for strings)
+        //    don't add NRE noise.
+        foreach (var prop in model.Properties)
+        {
+            foreach (var ann in prop.DataAnnotations)
+            {
+                WriteAnnotationCheck(writer, model, prop, ann);
+            }
         }
 
         writer.WriteLine();
@@ -727,6 +744,456 @@ internal static class SourceEmitter
         writer.Indent--;
         writer.WriteLine("}");
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // DataAnnotations validation emission
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The email regex used by the BCL's <c>EmailAddressAttribute</c>.
+    /// We inline the same pattern so the behaviour is familiar to users.
+    /// </summary>
+    private const string EmailRegexPattern = @"^[^@\s]+@[^@\s]+\.[^@\s]+$";
+
+    /// <summary>
+    /// Emits precompiled <c>private static readonly Regex</c> fields inside
+    /// the Validator class for every <see cref="DataAnnotationKind.RegularExpression"/>
+    /// and <see cref="DataAnnotationKind.EmailAddress"/> annotation.
+    /// </summary>
+    private static void WriteRegexFields(IndentedTextWriter writer, ConfigSectionModel model)
+    {
+        foreach (var prop in model.Properties)
+        {
+            foreach (var ann in prop.DataAnnotations)
+            {
+                if (ann.Kind == DataAnnotationKind.RegularExpression && ann.StringArg1 is not null)
+                {
+                    writer.Write("private static readonly global::System.Text.RegularExpressions.Regex _cb_Regex_");
+                    writer.Write(prop.Name);
+                    writer.Write(" = new global::System.Text.RegularExpressions.Regex(@\"");
+                    // Verbatim string: only double-quotes need escaping (by doubling).
+                    writer.Write(ann.StringArg1.Replace("\"", "\"\""));
+                    writer.WriteLine("\", global::System.Text.RegularExpressions.RegexOptions.Compiled);");
+                }
+                else if (ann.Kind == DataAnnotationKind.EmailAddress)
+                {
+                    writer.Write("private static readonly global::System.Text.RegularExpressions.Regex _cb_Regex_Email_");
+                    writer.Write(prop.Name);
+                    writer.Write(" = new global::System.Text.RegularExpressions.Regex(@\"");
+                    writer.Write(EmailRegexPattern.Replace("\"", "\"\""));
+                    writer.WriteLine("\", global::System.Text.RegularExpressions.RegexOptions.Compiled);");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Emits a single annotation validation check inside the <c>Validate</c>
+    /// method body, dispatching on <see cref="DataAnnotationModel.Kind"/>.
+    /// </summary>
+    private static void WriteAnnotationCheck(
+        IndentedTextWriter writer,
+        ConfigSectionModel model,
+        ConfigPropertyModel prop,
+        DataAnnotationModel ann)
+    {
+        switch (ann.Kind)
+        {
+            case DataAnnotationKind.Required:
+                // [Required] on a property that was already marked required by
+                // nullability analysis is a no-op (CB0009 already warned). On a
+                // property the existing pass didn't cover (e.g. a nullable string
+                // with [Required]) we emit the check here.
+                if (!prop.IsRequired)
+                {
+                    if (prop.IsString)
+                    {
+                        EmitStringNullOrWhitespace(writer, model, prop);
+                    }
+                    else if (prop.IsReferenceType)
+                    {
+                        EmitNullCheck(writer, model, prop);
+                    }
+                }
+                break;
+
+            case DataAnnotationKind.Range:
+                EmitRangeCheck(writer, model, prop, ann);
+                break;
+
+            case DataAnnotationKind.StringLength:
+                EmitStringLengthCheck(writer, model, prop, ann);
+                break;
+
+            case DataAnnotationKind.MinLength:
+                EmitMinLengthCheck(writer, model, prop, ann);
+                break;
+
+            case DataAnnotationKind.MaxLength:
+                EmitMaxLengthCheck(writer, model, prop, ann);
+                break;
+
+            case DataAnnotationKind.RegularExpression:
+                EmitRegexCheck(writer, model, prop);
+                break;
+
+            case DataAnnotationKind.Url:
+                EmitUrlCheck(writer, model, prop);
+                break;
+
+            case DataAnnotationKind.EmailAddress:
+                EmitEmailCheck(writer, model, prop);
+                break;
+
+            case DataAnnotationKind.AllowedValues:
+                EmitAllowedValuesCheck(writer, model, prop, ann);
+                break;
+
+            case DataAnnotationKind.DeniedValues:
+                EmitDeniedValuesCheck(writer, model, prop, ann);
+                break;
+        }
+    }
+
+    /// <summary>Emits <c>if (string.IsNullOrWhiteSpace(options.X)) failures.Add(...);</c></summary>
+    private static void EmitStringNullOrWhitespace(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop)
+    {
+        writer.Write("if (string.IsNullOrWhiteSpace(options.");
+        writer.Write(prop.Name);
+        writer.WriteLine("))");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.Add(\"[");
+        writer.Write(Escape(model.SectionName));
+        writer.Write(':');
+        writer.Write(prop.Name);
+        writer.WriteLine("] is required but was null, empty, or whitespace.\");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Emits <c>if (options.X is null) failures.Add(...);</c></summary>
+    private static void EmitNullCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop)
+    {
+        writer.Write("if (options.");
+        writer.Write(prop.Name);
+        writer.WriteLine(" is null)");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.Add(\"[");
+        writer.Write(Escape(model.SectionName));
+        writer.Write(':');
+        writer.Write(prop.Name);
+        writer.WriteLine("] is required but was null.\");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Emits <c>if (options.X &lt; min || options.X &gt; max) failures.Add(...);</c></summary>
+    private static void EmitRangeCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop, DataAnnotationModel ann)
+    {
+        if (!ann.NumericArg1.HasValue || !ann.NumericArg2.HasValue)
+        {
+            return;
+        }
+
+        var min = FormatNumericLiteral(ann.NumericArg1.Value, prop.ParseTypeKeyword);
+        var max = FormatNumericLiteral(ann.NumericArg2.Value, prop.ParseTypeKeyword);
+
+        writer.Write("if (options.");
+        writer.Write(prop.Name);
+        writer.Write(" < ");
+        writer.Write(min);
+        writer.Write(" || options.");
+        writer.Write(prop.Name);
+        writer.Write(" > ");
+        writer.Write(max);
+        writer.WriteLine(")");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.Add(\"[");
+        writer.Write(Escape(model.SectionName));
+        writer.Write(':');
+        writer.Write(prop.Name);
+        writer.Write("] must be between ");
+        writer.Write(min);
+        writer.Write(" and ");
+        writer.Write(max);
+        writer.WriteLine(".\");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Emits <c>if (options.X is not null &amp;&amp; (options.X.Length &lt; min || options.X.Length &gt; max))</c></summary>
+    private static void EmitStringLengthCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop, DataAnnotationModel ann)
+    {
+        // NumericArg1 = max length, NumericArg2 = min length (may be null).
+        var maxLen = ann.NumericArg1.HasValue ? (int)ann.NumericArg1.Value : (int?)null;
+        var minLen = ann.NumericArg2.HasValue ? (int)ann.NumericArg2.Value : 0;
+
+        if (maxLen is null)
+        {
+            return;
+        }
+
+        writer.Write("if (options.");
+        writer.Write(prop.Name);
+        writer.Write(" is not null && (options.");
+        writer.Write(prop.Name);
+        writer.Write(".Length < ");
+        writer.Write(minLen);
+        writer.Write(" || options.");
+        writer.Write(prop.Name);
+        writer.Write(".Length > ");
+        writer.Write(maxLen.Value);
+        writer.WriteLine("))");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.Add(\"[");
+        writer.Write(Escape(model.SectionName));
+        writer.Write(':');
+        writer.Write(prop.Name);
+        writer.Write("] must have length between ");
+        writer.Write(minLen);
+        writer.Write(" and ");
+        writer.Write(maxLen.Value);
+        writer.WriteLine(".\");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Emits <c>if (options.X is not null &amp;&amp; options.X.Length &lt; n)</c></summary>
+    private static void EmitMinLengthCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop, DataAnnotationModel ann)
+    {
+        if (!ann.NumericArg1.HasValue)
+        {
+            return;
+        }
+
+        var n = (int)ann.NumericArg1.Value;
+
+        writer.Write("if (options.");
+        writer.Write(prop.Name);
+        writer.Write(" is not null && options.");
+        writer.Write(prop.Name);
+        writer.Write(".Length < ");
+        writer.Write(n);
+        writer.WriteLine(")");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.Add(\"[");
+        writer.Write(Escape(model.SectionName));
+        writer.Write(':');
+        writer.Write(prop.Name);
+        writer.Write("] must have minimum length ");
+        writer.Write(n);
+        writer.WriteLine(".\");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Emits <c>if (options.X is not null &amp;&amp; options.X.Length &gt; n)</c></summary>
+    private static void EmitMaxLengthCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop, DataAnnotationModel ann)
+    {
+        if (!ann.NumericArg1.HasValue)
+        {
+            return;
+        }
+
+        var n = (int)ann.NumericArg1.Value;
+
+        writer.Write("if (options.");
+        writer.Write(prop.Name);
+        writer.Write(" is not null && options.");
+        writer.Write(prop.Name);
+        writer.Write(".Length > ");
+        writer.Write(n);
+        writer.WriteLine(")");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.Add(\"[");
+        writer.Write(Escape(model.SectionName));
+        writer.Write(':');
+        writer.Write(prop.Name);
+        writer.Write("] must have maximum length ");
+        writer.Write(n);
+        writer.WriteLine(".\");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Emits <c>if (options.X is not null &amp;&amp; !_cb_Regex_{X}.IsMatch(options.X))</c></summary>
+    private static void EmitRegexCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop)
+    {
+        writer.Write("if (options.");
+        writer.Write(prop.Name);
+        writer.Write(" is not null && !_cb_Regex_");
+        writer.Write(prop.Name);
+        writer.Write(".IsMatch(options.");
+        writer.Write(prop.Name);
+        writer.WriteLine("))");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.Add(\"[");
+        writer.Write(Escape(model.SectionName));
+        writer.Write(':');
+        writer.Write(prop.Name);
+        writer.WriteLine("] does not match the required pattern.\");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Emits <c>if (options.X is not null &amp;&amp; !Uri.TryCreate(options.X, Absolute, out _))</c></summary>
+    private static void EmitUrlCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop)
+    {
+        writer.Write("if (options.");
+        writer.Write(prop.Name);
+        writer.Write(" is not null && !global::System.Uri.TryCreate(options.");
+        writer.Write(prop.Name);
+        writer.WriteLine(", global::System.UriKind.Absolute, out _))");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.Add(\"[");
+        writer.Write(Escape(model.SectionName));
+        writer.Write(':');
+        writer.Write(prop.Name);
+        writer.WriteLine("] is not a valid absolute URL.\");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Emits <c>if (options.X is not null &amp;&amp; !_cb_Regex_Email_{X}.IsMatch(options.X))</c></summary>
+    private static void EmitEmailCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop)
+    {
+        writer.Write("if (options.");
+        writer.Write(prop.Name);
+        writer.Write(" is not null && !_cb_Regex_Email_");
+        writer.Write(prop.Name);
+        writer.Write(".IsMatch(options.");
+        writer.Write(prop.Name);
+        writer.WriteLine("))");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.Add(\"[");
+        writer.Write(Escape(model.SectionName));
+        writer.Write(':');
+        writer.Write(prop.Name);
+        writer.WriteLine("] is not a valid email address.\");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Emits <c>if (!new[] { "A", "B" }.Contains(options.X))</c></summary>
+    private static void EmitAllowedValuesCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop, DataAnnotationModel ann)
+    {
+        if (ann.ValuesArg.Length == 0)
+        {
+            return;
+        }
+
+        writer.Write("if (");
+        if (prop.IsString)
+        {
+            writer.Write("options.");
+            writer.Write(prop.Name);
+            writer.Write(" is not null && ");
+        }
+
+        writer.Write("!new[] { ");
+        WriteValuesList(writer, ann.ValuesArg, prop.IsString);
+        writer.Write(" }.Contains(options.");
+        writer.Write(prop.Name);
+        writer.WriteLine("))");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.Add(\"[");
+        writer.Write(Escape(model.SectionName));
+        writer.Write(':');
+        writer.Write(prop.Name);
+        writer.Write("] must be one of: ");
+        writer.Write(string.Join(", ", ann.ValuesArg.AsArray()));
+        writer.WriteLine(".\");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Emits <c>if (new[] { "X" }.Contains(options.X))</c></summary>
+    private static void EmitDeniedValuesCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop, DataAnnotationModel ann)
+    {
+        if (ann.ValuesArg.Length == 0)
+        {
+            return;
+        }
+
+        writer.Write("if (");
+        if (prop.IsString)
+        {
+            writer.Write("options.");
+            writer.Write(prop.Name);
+            writer.Write(" is not null && ");
+        }
+
+        writer.Write("new[] { ");
+        WriteValuesList(writer, ann.ValuesArg, prop.IsString);
+        writer.Write(" }.Contains(options.");
+        writer.Write(prop.Name);
+        writer.WriteLine("))");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.Add(\"[");
+        writer.Write(Escape(model.SectionName));
+        writer.Write(':');
+        writer.Write(prop.Name);
+        writer.Write("] must not be one of: ");
+        writer.Write(string.Join(", ", ann.ValuesArg.AsArray()));
+        writer.WriteLine(".\");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>Writes a comma-separated list of values, quoting strings.</summary>
+    private static void WriteValuesList(IndentedTextWriter writer, EquatableArray<string> values, bool quoteAsString)
+    {
+        for (int i = 0; i < values.Length; i++)
+        {
+            if (i > 0)
+            {
+                writer.Write(", ");
+            }
+
+            if (quoteAsString)
+            {
+                writer.Write('"');
+                writer.Write(Escape(values[i]));
+                writer.Write('"');
+            }
+            else
+            {
+                writer.Write(values[i]);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Formats a <c>double</c> value as a C# numeric literal appropriate for
+    /// the given type keyword. For integer types we cast to <c>long</c> and
+    /// emit a plain integer literal; for float/double/decimal we add the
+    /// appropriate suffix.
+    /// </summary>
+    private static string FormatNumericLiteral(double value, string? parseTypeKeyword)
+    {
+        return parseTypeKeyword switch
+        {
+            "float" => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "f",
+            "double" => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "d",
+            "decimal" => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + "m",
+            _ => ((long)value).ToString(System.Globalization.CultureInfo.InvariantCulture),
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Shared helpers
+    // ─────────────────────────────────────────────────────────────────────
 
     /// <summary>
     /// Builds a deterministic local-variable name for a property. We prefix

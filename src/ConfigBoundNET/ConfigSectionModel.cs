@@ -85,6 +85,12 @@ internal enum ConfigTypeKind
 /// the C# keyword (e.g. <c>int</c>, <c>long</c>, <c>double</c>) used to call the
 /// matching static <c>TryParse</c> overload. Null for everything else.
 /// </param>
+/// <param name="DataAnnotations">
+/// DataAnnotations attributes found on this property, parsed into flat
+/// equatable models. The emitter consumes these to produce explicit,
+/// reflection-free validation checks after the existing null/whitespace pass.
+/// Empty when no recognised annotations are present.
+/// </param>
 internal sealed record ConfigPropertyModel(
     string Name,
     bool IsRequired,
@@ -94,7 +100,8 @@ internal sealed record ConfigPropertyModel(
     bool IsNullableValueType,
     string? NestedTypeFullyQualifiedName,
     string? EnumFullyQualifiedName,
-    string? ParseTypeKeyword) : IEquatable<ConfigPropertyModel>;
+    string? ParseTypeKeyword,
+    EquatableArray<DataAnnotationModel> DataAnnotations) : IEquatable<ConfigPropertyModel>;
 
 /// <summary>
 /// How the generated, reflection-free binder should read a property out of an
@@ -219,6 +226,10 @@ internal static class DescriptorLookup
         "CB0003" => DiagnosticDescriptors.NestedTypeNotSupported,
         "CB0004" => DiagnosticDescriptors.NoBindableMembers,
         "CB0005" => DiagnosticDescriptors.InvalidTargetKind,
+        "CB0006" => DiagnosticDescriptors.RangeOnNonNumeric,
+        "CB0007" => DiagnosticDescriptors.LengthOnNonString,
+        "CB0008" => DiagnosticDescriptors.InvalidRegexPattern,
+        "CB0009" => DiagnosticDescriptors.RedundantRequired,
         "CB0010" => DiagnosticDescriptors.UnsupportedBindingType,
         _ => throw new ArgumentOutOfRangeException(nameof(id), id, "Unknown diagnostic id."),
     };
@@ -353,6 +364,12 @@ internal static class ModelBuilder
                     new EquatableArray<string>(new[] { property.Name, property.Type.ToDisplayString() })));
             }
 
+            // Scan for DataAnnotations attributes and convert them into
+            // flat, equatable models the emitter can turn into explicit checks.
+            var annotations = ExtractDataAnnotations(
+                property, classification.Strategy, isString, isRequired,
+                diagnostics, syntax);
+
             properties.Add(new ConfigPropertyModel(
                 Name: property.Name,
                 IsRequired: isRequired,
@@ -362,7 +379,8 @@ internal static class ModelBuilder
                 IsNullableValueType: classification.IsNullableValueType,
                 NestedTypeFullyQualifiedName: classification.NestedTypeFullyQualifiedName,
                 EnumFullyQualifiedName: classification.EnumFullyQualifiedName,
-                ParseTypeKeyword: classification.ParseTypeKeyword));
+                ParseTypeKeyword: classification.ParseTypeKeyword,
+                DataAnnotations: new EquatableArray<DataAnnotationModel>(annotations.Count > 0 ? annotations.ToArray() : Array.Empty<DataAnnotationModel>())));
         }
 
         if (properties.Count == 0)
@@ -556,6 +574,267 @@ internal static class ModelBuilder
         }
 
         return false;
+    }
+
+    // ── DataAnnotations extraction ──────────────────────────────────────
+
+    /// <summary>
+    /// The <c>System.ComponentModel.DataAnnotations</c> namespace prefix used
+    /// to match annotation attribute classes by their fully qualified name.
+    /// </summary>
+    private const string DaNamespace = "System.ComponentModel.DataAnnotations.";
+
+    /// <summary>
+    /// Scans the attributes on <paramref name="property"/> for recognised
+    /// DataAnnotations, converts each into a flat
+    /// <see cref="DataAnnotationModel"/>, and emits diagnostics when an
+    /// annotation is misapplied (wrong target type, invalid regex, etc.).
+    /// </summary>
+    private static List<DataAnnotationModel> ExtractDataAnnotations(
+        IPropertySymbol property,
+        BindingStrategy binding,
+        bool isString,
+        bool isRequired,
+        List<DiagnosticInfo> diagnostics,
+        TypeDeclarationSyntax syntax)
+    {
+        var result = new List<DataAnnotationModel>();
+        var location = LocationInfo.From(syntax);
+        var isNumeric = binding is BindingStrategy.Integer or BindingStrategy.FloatingPoint;
+        var typeName = property.Type.ToDisplayString();
+
+        foreach (var attr in property.GetAttributes())
+        {
+            var fqn = attr.AttributeClass?.ToDisplayString();
+            if (fqn is null || !fqn.StartsWith(DaNamespace, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // Strip the namespace prefix to get a simple switch key.
+            var simpleName = fqn.Substring(DaNamespace.Length);
+
+            switch (simpleName)
+            {
+                case "RequiredAttribute":
+                    if (isRequired)
+                    {
+                        diagnostics.Add(new DiagnosticInfo(
+                            DiagnosticDescriptors.RedundantRequired.Id,
+                            location,
+                            new EquatableArray<string>(new[] { property.Name })));
+                    }
+
+                    // Still emit the model so the validation is present even
+                    // when the user explicitly opted in with [Required].
+                    result.Add(new DataAnnotationModel(
+                        DataAnnotationKind.Required,
+                        null, null, null,
+                        new EquatableArray<string>(Array.Empty<string>())));
+                    break;
+
+                case "RangeAttribute":
+                    if (!isNumeric)
+                    {
+                        diagnostics.Add(new DiagnosticInfo(
+                            DiagnosticDescriptors.RangeOnNonNumeric.Id,
+                            location,
+                            new EquatableArray<string>(new[] { property.Name, typeName })));
+                        break;
+                    }
+
+                    if (attr.ConstructorArguments.Length >= 2)
+                    {
+                        var min = ConvertToDouble(attr.ConstructorArguments[0]);
+                        var max = ConvertToDouble(attr.ConstructorArguments[1]);
+                        if (min.HasValue && max.HasValue)
+                        {
+                            result.Add(new DataAnnotationModel(
+                                DataAnnotationKind.Range,
+                                null, min.Value, max.Value,
+                                new EquatableArray<string>(Array.Empty<string>())));
+                        }
+                    }
+                    break;
+
+                case "StringLengthAttribute":
+                    if (!isString)
+                    {
+                        diagnostics.Add(new DiagnosticInfo(
+                            DiagnosticDescriptors.LengthOnNonString.Id,
+                            location,
+                            new EquatableArray<string>(new[] { "StringLength", property.Name, typeName })));
+                        break;
+                    }
+
+                    if (attr.ConstructorArguments.Length >= 1)
+                    {
+                        var maxLen = ConvertToDouble(attr.ConstructorArguments[0]);
+                        double? minLen = null;
+                        // MinimumLength is a named argument, not a constructor arg.
+                        foreach (var named in attr.NamedArguments)
+                        {
+                            if (named.Key == "MinimumLength")
+                            {
+                                minLen = ConvertToDouble(named.Value);
+                            }
+                        }
+
+                        result.Add(new DataAnnotationModel(
+                            DataAnnotationKind.StringLength,
+                            null, maxLen, minLen,
+                            new EquatableArray<string>(Array.Empty<string>())));
+                    }
+                    break;
+
+                case "MinLengthAttribute":
+                    if (!isString)
+                    {
+                        diagnostics.Add(new DiagnosticInfo(
+                            DiagnosticDescriptors.LengthOnNonString.Id,
+                            location,
+                            new EquatableArray<string>(new[] { "MinLength", property.Name, typeName })));
+                        break;
+                    }
+
+                    if (attr.ConstructorArguments.Length >= 1)
+                    {
+                        result.Add(new DataAnnotationModel(
+                            DataAnnotationKind.MinLength,
+                            null, ConvertToDouble(attr.ConstructorArguments[0]), null,
+                            new EquatableArray<string>(Array.Empty<string>())));
+                    }
+                    break;
+
+                case "MaxLengthAttribute":
+                    if (!isString)
+                    {
+                        diagnostics.Add(new DiagnosticInfo(
+                            DiagnosticDescriptors.LengthOnNonString.Id,
+                            location,
+                            new EquatableArray<string>(new[] { "MaxLength", property.Name, typeName })));
+                        break;
+                    }
+
+                    if (attr.ConstructorArguments.Length >= 1)
+                    {
+                        result.Add(new DataAnnotationModel(
+                            DataAnnotationKind.MaxLength,
+                            null, ConvertToDouble(attr.ConstructorArguments[0]), null,
+                            new EquatableArray<string>(Array.Empty<string>())));
+                    }
+                    break;
+
+                case "RegularExpressionAttribute":
+                    if (attr.ConstructorArguments.Length >= 1 &&
+                        attr.ConstructorArguments[0].Value is string pattern)
+                    {
+                        // Validate the regex at build time so the user gets an
+                        // immediate CB0008 instead of a runtime exception.
+                        try
+                        {
+                            _ = new System.Text.RegularExpressions.Regex(pattern);
+                        }
+                        catch (ArgumentException ex)
+                        {
+                            diagnostics.Add(new DiagnosticInfo(
+                                DiagnosticDescriptors.InvalidRegexPattern.Id,
+                                location,
+                                new EquatableArray<string>(new[] { property.Name, ex.Message })));
+                            break;
+                        }
+
+                        result.Add(new DataAnnotationModel(
+                            DataAnnotationKind.RegularExpression,
+                            pattern, null, null,
+                            new EquatableArray<string>(Array.Empty<string>())));
+                    }
+                    break;
+
+                case "UrlAttribute":
+                    result.Add(new DataAnnotationModel(
+                        DataAnnotationKind.Url,
+                        null, null, null,
+                        new EquatableArray<string>(Array.Empty<string>())));
+                    break;
+
+                case "EmailAddressAttribute":
+                    result.Add(new DataAnnotationModel(
+                        DataAnnotationKind.EmailAddress,
+                        null, null, null,
+                        new EquatableArray<string>(Array.Empty<string>())));
+                    break;
+
+                case "AllowedValuesAttribute":
+                    result.Add(new DataAnnotationModel(
+                        DataAnnotationKind.AllowedValues,
+                        null, null, null,
+                        ExtractValuesArg(attr)));
+                    break;
+
+                case "DeniedValuesAttribute":
+                    result.Add(new DataAnnotationModel(
+                        DataAnnotationKind.DeniedValues,
+                        null, null, null,
+                        ExtractValuesArg(attr)));
+                    break;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Converts a Roslyn <see cref="TypedConstant"/> to a nullable double.
+    /// Returns null when the constant is not a numeric type.
+    /// </summary>
+    private static double? ConvertToDouble(TypedConstant constant)
+    {
+        return constant.Value switch
+        {
+            int i => i,
+            long l => l,
+            double d => d,
+            float f => f,
+            decimal m => (double)m,
+            byte b => b,
+            sbyte sb => sb,
+            short sh => sh,
+            ushort us => us,
+            uint ui => ui,
+            ulong ul => ul,
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// Reads the <c>params object[]</c> constructor argument from
+    /// <c>[AllowedValues]</c> or <c>[DeniedValues]</c> and converts each
+    /// element to its <see cref="string"/> representation for embedding in
+    /// the generated C# literal array.
+    /// </summary>
+    private static EquatableArray<string> ExtractValuesArg(AttributeData attr)
+    {
+        if (attr.ConstructorArguments.Length == 0)
+        {
+            return new EquatableArray<string>(Array.Empty<string>());
+        }
+
+        var arg = attr.ConstructorArguments[0];
+        // params arguments appear as an array TypedConstant.
+        if (arg.Kind == TypedConstantKind.Array)
+        {
+            var values = new string[arg.Values.Length];
+            for (int i = 0; i < arg.Values.Length; i++)
+            {
+                values[i] = arg.Values[i].Value?.ToString() ?? "null";
+            }
+
+            return new EquatableArray<string>(values);
+        }
+
+        // Single non-array argument (unlikely, but defensive).
+        return new EquatableArray<string>(new[] { arg.Value?.ToString() ?? "null" });
     }
 }
 
