@@ -1,0 +1,121 @@
+name: AOT smoke test
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AOT smoke-test workflow.
+#
+# Runs on every push / PR. Two jobs:
+#
+#   1. `build`     — fast static-analysis check. Builds tests/ConfigBoundNET.AotTests
+#                    with <IsAotCompatible>true</IsAotCompatible> set, which
+#                    enables the AOT, trim, and single-file analyzers.
+#                    Combined with the repo-wide TreatWarningsAsErrors, the
+#                    build fails on the first IL2026 / IL3050 / IL2091 warning
+#                    surfaced from generated code. Takes ~30 seconds.
+#
+#   2. `publish`   — full Native AOT publish on Linux x64. Catches anything
+#                    the static analyzer might miss (e.g. an IL2055 that only
+#                    triggers when the AOT compiler actually emits the
+#                    closed-generic call site). Takes a few minutes.
+#                    Linux runners ship with the AOT toolchain pre-installed
+#                    in the .NET SDK image, so no extra setup is required.
+#
+# Both jobs additionally run the smoke-test executable so we get a runtime
+# round-trip assertion of every supported BindingStrategy on top of the
+# static checks.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: # allow manual runs from the Actions UI
+
+# Cancel in-progress runs of the same workflow on the same ref. Saves CI
+# minutes when developers push rapidly to the same branch.
+concurrency:
+  group: aot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (static AOT analyzers)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK (pinned to global.json)
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore solution
+        run: dotnet restore ConfigBoundNET.sln
+
+      # Build everything once. The AOT test project's <IsAotCompatible>true</IsAotCompatible>
+      # bundles the trim/AOT/single-file analyzers, and the repo-wide
+      # TreatWarningsAsErrors turns any IL2xxx / IL3xxx warning into a build
+      # error. If the generator emits anything AOT-unfriendly, this step fails.
+      - name: Build solution
+        run: dotnet build ConfigBoundNET.sln --configuration Release --no-restore
+
+      # Cheap runtime assertion: the smoke-test program loads its own
+      # appsettings.json, exercises every supported BindingStrategy, and
+      # exits 0 only when every property round-trips correctly.
+      - name: Run AOT smoke test (managed)
+        working-directory: tests/ConfigBoundNET.AotTests
+        run: dotnet run --configuration Release --no-build
+
+      # Re-run the existing unit + integration suite for good measure so we
+      # get a single workflow that proves both the analyzer and runtime
+      # behaviour are healthy on Linux.
+      - name: Run unit + integration tests
+        run: dotnet test tests/ConfigBoundNET.Tests/ConfigBoundNET.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+
+  publish:
+    name: Publish (Native AOT, linux-x64)
+    runs-on: ubuntu-latest
+    # Don't block PRs on the slow job if the fast one already failed.
+    needs: build
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK (pinned to global.json)
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # The .NET SDK Docker image used by GitHub-hosted ubuntu-latest runners
+      # ships clang and the native linker by default, so no apt-get is needed
+      # for AOT publishing on Linux.
+      - name: Publish AOT smoke test (linux-x64)
+        run: |
+          dotnet publish tests/ConfigBoundNET.AotTests/ConfigBoundNET.AotTests.csproj \
+            --configuration Release \
+            --runtime linux-x64 \
+            --self-contained true \
+            --output artifacts/aot
+
+      # Run the native binary directly. We resolve the path with `find` so
+      # the workflow keeps working if the published file name changes
+      # (e.g. when the project is renamed).
+      - name: Execute Native AOT binary
+        working-directory: tests/ConfigBoundNET.AotTests
+        run: |
+          BINARY="$(find ../../artifacts/aot -maxdepth 1 -type f -executable -name 'ConfigBoundNET.AotTests*' | head -n 1)"
+          echo "Running: $BINARY"
+          "$BINARY"
+
+      # Upload the published artifact so failures can be downloaded and
+      # inspected. The .gz keeps the artifact small (< 5 MB instead of ~25 MB).
+      - name: Upload AOT publish artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aot-smoke-${{ github.run_id }}
+          path: artifacts/aot/
+          retention-days: 7

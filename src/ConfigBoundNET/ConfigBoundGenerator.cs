@@ -53,15 +53,21 @@ public sealed class ConfigBoundGenerator : IIncrementalGenerator
     /// <inheritdoc />
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
-        // ── Step 1: emit the attribute source at post-initialization time.
-        //    This runs once per compilation, before any other generator work,
-        //    and makes ConfigBoundNET.ConfigSectionAttribute available to the
-        //    user's source tree.
+        // ── Step 1: emit the attribute source plus the per-compilation
+        //    OptionsFactory shim at post-initialization time. These run once
+        //    per compilation, before any other generator work, and make both
+        //    ConfigBoundNET.ConfigSectionAttribute and the
+        //    ConfigBoundOptionsFactory<T> helper available to the user's
+        //    source tree without requiring a runtime package reference.
         context.RegisterPostInitializationOutput(static ctx =>
         {
             ctx.AddSource(
                 AttributeSource.HintName,
                 SourceText.From(AttributeSource.Source, Encoding.UTF8));
+
+            ctx.AddSource(
+                AttributeSource.OptionsFactoryHintName,
+                SourceText.From(AttributeSource.OptionsFactorySource, Encoding.UTF8));
         });
 
         // ── Step 2: find every type annotated with [ConfigSection]. The

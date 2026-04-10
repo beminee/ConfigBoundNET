@@ -10,3 +10,4 @@ CB0002  | ConfigBoundNET | Error    | Configuration section name cannot be empty
 CB0003  | ConfigBoundNET | Error    | Nested config types are not supported
 CB0004  | ConfigBoundNET | Warning  | Config type has no bindable properties
 CB0005  | ConfigBoundNET | Error    | Unsupported target for [ConfigSection]
+CB0010  | ConfigBoundNET | Warning  | Property type is not bindable by ConfigBoundNET

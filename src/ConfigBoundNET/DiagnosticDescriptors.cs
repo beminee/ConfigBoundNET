@@ -79,4 +79,24 @@ internal static class DiagnosticDescriptors
         category: Category,
         defaultSeverity: DiagnosticSeverity.Error,
         isEnabledByDefault: true);
+
+    /// <summary>
+    /// CB0010 — the property type is outside the set of types ConfigBoundNET
+    /// can bind without reflection. The generator skips the property and the user
+    /// gets a default-constructed value at runtime.
+    /// </summary>
+    /// <remarks>
+    /// This warning is the price of the AOT-friendly emitter. The supported types
+    /// are documented next to <see cref="BindingStrategy"/> — everything
+    /// else needs either a wrapper type, a custom <c>IValidateOptions&lt;T&gt;</c>,
+    /// or a manual <c>services.Configure&lt;T&gt;()</c> call layered on top.
+    /// </remarks>
+    public static readonly DiagnosticDescriptor UnsupportedBindingType = new(
+        id: "CB0010",
+        title: "Property type is not bindable by ConfigBoundNET",
+        messageFormat: "Property '{0}' has type '{1}' which ConfigBoundNET cannot bind without reflection and will be left at its default value",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Warning,
+        isEnabledByDefault: true,
+        description: "ConfigBoundNET emits an explicit, AOT-safe binder. Properties whose types fall outside the supported set (string, primitives, Guid, TimeSpan, DateTime(Offset), Uri, enums, and nested [ConfigSection] types) cannot be bound and are silently skipped.");
 }
