@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     ConfigBoundNET ships as a Roslyn source generator packaged as a NuGet analyzer.
@@ -27,6 +27,8 @@
     <Title>ConfigBoundNET</Title>
     <Description>Compile-time validated, strongly-typed configuration binding for .NET. Annotate a partial record with [ConfigSection] and get a validator, DI extension method, and build-time diagnostics for free.</Description>
     <PackageTags>configuration;source-generator;options;validation;roslyn;ioptions</PackageTags>
+    <RepositoryUrl>https://github.com/beminee/ConfigBoundNET</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
 
     <!-- Roslyn components cannot depend on the documentation analyzer here
          because it would demand docs on emitted helper types. -->
@@ -57,6 +59,8 @@
     <!-- Package the generator DLL into the `analyzers/dotnet/cs` folder of
          the resulting NuGet so the Roslyn host loads it automatically. -->
     <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
   <ItemGroup>
