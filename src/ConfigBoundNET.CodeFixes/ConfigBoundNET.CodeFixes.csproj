@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Code fix providers for ConfigBoundNET diagnostics.
+
+    This is a separate assembly from the generator because Roslyn enforces
+    RS1038: generators must not reference Microsoft.CodeAnalysis.Workspaces
+    (it isn't available during command-line compilation). Code fix providers,
+    which only run in the IDE, need the Workspaces API for document editing.
+
+    Both this DLL and the generator DLL are packaged into analyzers/dotnet/cs
+    in the ConfigBoundNET NuGet so the IDE loads them together.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+
+    <!-- This DLL is shipped inside the generator's NuGet; it has no
+         independent package identity. -->
+    <IsPackable>false</IsPackable>
+
+    <!-- RS1038 — we intentionally reference Workspaces because this assembly
+         is a code fix provider, not a source generator.
+         CA1812 — code fix providers are instantiated by Roslyn via MEF's
+         [ExportCodeFixProvider]; the analyzer can't see that. -->
+    <NoWarn>$(NoWarn);RS1038;CA1812</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.11.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" PrivateAssets="all" />
+    <PackageReference Include="PolySharp" Version="1.14.1" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Reference the generator project so we can access DiagnosticDescriptors.
+         OutputItemType=Analyzer is NOT set here — we want a normal P2P
+         reference for compile-time access to the descriptor constants. -->
+    <ProjectReference Include="..\ConfigBoundNET\ConfigBoundNET.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="ConfigBoundNET.Tests" />
+  </ItemGroup>
+
+</Project>
