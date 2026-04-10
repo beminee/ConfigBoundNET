@@ -26,7 +26,7 @@
            CA1852 — DbConfig "could be sealed" (records bound via IOptions
                     are conventionally left unsealed so users can derive
                     or mock them in tests). -->
-    <NoWarn>$(NoWarn);CA1812;CA1852</NoWarn>
+    <NoWarn>$(NoWarn);CA1812;CA1852;CA1303</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
