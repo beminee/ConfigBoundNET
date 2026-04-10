@@ -1,0 +1,154 @@
+name: CI
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Build, test, pack, and (on version tags) publish to NuGet.
+#
+# Triggers:
+#   - Every push / PR to main   → build + test + pack (artifact only)
+#   - Push of a v* tag          → build + test + pack + publish to NuGet
+#   - Manual dispatch            → same as push to main
+#
+# The version baked into the .nupkg comes from <Version> in
+# Directory.Build.props by default. When publishing a release, override it
+# from the tag name (e.g. tag v0.2.0 → Version=0.2.0) so the package
+# version always matches the Git tag.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  CONFIGURATION: Release
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Job 1: Build the solution, run all tests, pack the NuGet.
+  # ─────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so SourceLink / git-based versioning works
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # ── Derive the package version from the Git tag when present. ────────
+      # On a tag push like "v0.2.0", strip the leading 'v' and pass it as
+      # /p:Version so the .nupkg, assembly, and NuGet metadata all match.
+      # On branch pushes / PRs the Version from Directory.Build.props is used.
+      - name: Resolve version from tag
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+            VERSION="${TAG#v}"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "Resolved version from tag: ${VERSION}"
+          else
+            echo "version=" >> "$GITHUB_OUTPUT"
+            echo "No tag — using Version from Directory.Build.props"
+          fi
+
+      - name: Restore
+        run: dotnet restore ConfigBoundNET.sln
+
+      - name: Build
+        run: |
+          VERSION_ARG=""
+          if [[ -n "${{ steps.version.outputs.version }}" ]]; then
+            VERSION_ARG="/p:Version=${{ steps.version.outputs.version }}"
+          fi
+          dotnet build ConfigBoundNET.sln \
+            --configuration ${{ env.CONFIGURATION }} \
+            --no-restore \
+            ${VERSION_ARG}
+
+      - name: Test
+        run: |
+          dotnet test tests/ConfigBoundNET.Tests/ConfigBoundNET.Tests.csproj \
+            --configuration ${{ env.CONFIGURATION }} \
+            --no-build \
+            --logger "console;verbosity=normal"
+
+      - name: Run AOT smoke test
+        working-directory: tests/ConfigBoundNET.AotTests
+        run: dotnet run --configuration ${{ env.CONFIGURATION }} --no-build
+
+      - name: Run example
+        working-directory: examples/ConfigBoundNET.Example
+        run: dotnet run --configuration ${{ env.CONFIGURATION }} --no-build
+
+      # ── Pack the NuGet. The CodeFixes DLL must be built first so the
+      #    generator csproj can include it in the package. ──────────────────
+      - name: Pack
+        run: |
+          VERSION_ARG=""
+          if [[ -n "${{ steps.version.outputs.version }}" ]]; then
+            VERSION_ARG="/p:Version=${{ steps.version.outputs.version }}"
+          fi
+          dotnet pack src/ConfigBoundNET/ConfigBoundNET.csproj \
+            --configuration ${{ env.CONFIGURATION }} \
+            --no-build \
+            --output ./artifacts \
+            ${VERSION_ARG}
+
+      # ── Upload the .nupkg as a build artifact so it can be downloaded
+      #    from the Actions UI for inspection / manual publishing. ─────────
+      - name: Upload NuGet artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkg-${{ github.run_id }}
+          path: artifacts/*.nupkg
+          retention-days: 30
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Job 2: Publish to NuGet.org — only runs on version tags.
+  # ─────────────────────────────────────────────────────────────────────────
+  publish:
+    name: Publish to NuGet
+    needs: build
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: ubuntu-latest
+
+    # Require manual approval via GitHub Environments before pushing to
+    # NuGet. This is optional — remove the `environment:` line if you
+    # prefer fully automated publishing on every tag push.
+    environment: nuget
+
+    steps:
+      - name: Download NuGet artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nupkg-${{ github.run_id }}
+          path: artifacts
+
+      - name: Push to NuGet.org
+        run: |
+          dotnet nuget push artifacts/*.nupkg \
+            --api-key ${{ secrets.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.nupkg
+          generate_release_notes: true

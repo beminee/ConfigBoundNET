@@ -70,6 +70,12 @@
          the resulting NuGet so the Roslyn host loads it automatically. -->
     <None Include="$(OutputPath)\$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
 
+    <!-- Ship the code-fix providers DLL alongside the generator so IDEs
+         pick up both. The CodeFixes project is a separate assembly because
+         RS1038 prohibits Workspaces references in a generator assembly. -->
+    <None Include="..\ConfigBoundNET.CodeFixes\$(OutputPath)\ConfigBoundNET.CodeFixes.dll"
+          Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+
     <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
@@ -86,6 +92,7 @@
          and reference internal helpers (AttributeSource, ModelBuilder, etc.)
          without promoting them to public API. -->
     <InternalsVisibleTo Include="ConfigBoundNET.Tests" />
+    <InternalsVisibleTo Include="ConfigBoundNET.CodeFixes" />
   </ItemGroup>
 
 </Project>

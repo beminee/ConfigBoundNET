@@ -28,8 +28,10 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
 
-    <!-- Roslyn drives the generator tests. -->
+    <!-- Roslyn drives the generator tests. Workspaces is needed because
+         the CodeFix tests instantiate CodeFixProvider subclasses. -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="4.11.0" />
     <!-- Supplies the full .NET 10 reference-assembly set so synthetic
          compilations match the System.Runtime version that the M.E.* runtime
          packages below were built against. Mismatched reference and runtime
@@ -56,6 +58,8 @@
          directly and drive it against synthetic compilations, so they need
          access to the generator type at runtime. -->
     <ProjectReference Include="..\..\src\ConfigBoundNET\ConfigBoundNET.csproj" />
+    <!-- Code-fix provider tests need runtime access to the CodeFix types. -->
+    <ProjectReference Include="..\..\src\ConfigBoundNET.CodeFixes\ConfigBoundNET.CodeFixes.csproj" />
   </ItemGroup>
 
 </Project>
