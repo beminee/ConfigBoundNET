@@ -215,6 +215,36 @@ Try editing `appsettings.json` to remove the `Conn` value and re-run — the hos
 
 ---
 
+## Roadmap
+
+ConfigBoundNET is currently at **0.1**. The pieces below are tracked toward 1.0; PRs are welcome on any of them.
+
+### Tier 1 — needed before 1.0
+
+- [ ] **DataAnnotations validation.** Honor `[Range]`, `[StringLength]`, `[RegularExpression]`, `[Url]`, `[MinLength]`, `[EmailAddress]`, etc. Without this, anyone with a `Port { get; init; }` has to write a hand-rolled validator on the side, defeating the point of the library.
+- [ ] **Reflection-free binding (AOT support).** Today the generator emits `services.Configure<T>(section)`, which delegates to `ConfigurationBinder` and uses reflection. Under Native AOT / aggressive trimming this fails. Emit explicit `options.Conn = section["Conn"]` style binding instead so the whole pipeline is reflection-free.
+- [ ] **Custom validation hook.** Generate a `partial void ValidateCustom(List<string> failures)` so users can express cross-field rules ("`ConnString` XOR `ConnStringSecretRef` must be set") without writing a separate `IValidateOptions<T>`.
+- [ ] **CodeFix providers** for CB0001 ("Add `partial` modifier") and CB0002 ("Use type name as section name"). One-click fixes inside the IDE.
+- [ ] **CI workflow** (`.github/workflows/ci.yml`): build, test, pack, attach the `.nupkg` as an artifact, publish to NuGet on tag push.
+
+### Tier 2 — quality-of-life
+
+- [ ] **`[ConfigSection]` with no argument** infers the section name from the type name (`DbConfig` → `"Db"`, stripping trailing `Config` / `Options` / `Settings`).
+- [ ] **Nested config types.** If `DbConfig.Retry` is a non-nullable `RetryConfig`, recurse the null/required checks into it. Currently complex properties are ignored.
+- [ ] **Collection support.** Detect `List<T>`, `T[]`, `Dictionary<string, T>` and at minimum require non-empty when non-nullable.
+- [ ] **Snapshot tests with `Verify.SourceGenerators`** so refactors of the emitter cannot silently change generated output.
+- [ ] **Generator perf test** asserting incremental cache hits via `GeneratorDriver.GetRunResult().Results[0].TrackedSteps` — protects against accidentally putting non-equatable types in the pipeline.
+- [ ] **SourceLink + deterministic builds + `.snupkg`** so users get source debugging on nuget.org.
+- [ ] **`CHANGELOG.md`** wired into the package via `PackageReleaseNotes`.
+
+### Out of scope (probably)
+
+- **Async validation.** `IValidateOptions<T>` is sync; async checks (e.g. probing a DB connection) belong in a hosted startup task.
+- **Custom configuration providers / new sources.** Orthogonal concern — ConfigBoundNET binds whatever `IConfiguration` already exposes.
+- **Struct support.** `record struct` configs are an anti-pattern with `IOptions<T>` (the framework hands out copies). Already rejected by CB0005; intentionally left that way.
+
+---
+
 ## Contributing
 
 Issues and PRs welcome. Please make sure `dotnet test` passes and that any new diagnostic IDs are listed in `src/ConfigBoundNET/AnalyzerReleases.Unshipped.md`.

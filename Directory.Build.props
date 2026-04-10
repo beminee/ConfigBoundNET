@@ -26,7 +26,7 @@
     <Company>ConfigBoundNET</Company>
     <Product>ConfigBoundNET</Product>
     <Copyright>Copyright (c) ConfigBoundNET contributors</Copyright>
-    <PackageLicenseExpression>GPL3</PackageLicenseExpression>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
     <RepositoryType>git</RepositoryType>
     <RepositoryUrl>https://github.com/ConfigBoundNET/ConfigBoundNET</RepositoryUrl>
     <PackageProjectUrl>https://github.com/ConfigBoundNET/ConfigBoundNET</PackageProjectUrl>
