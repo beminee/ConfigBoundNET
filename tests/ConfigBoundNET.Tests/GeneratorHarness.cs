@@ -75,6 +75,31 @@ internal static class GeneratorHarness
     }
 
     /// <summary>
+    /// Returns the <see cref="GeneratorDriver"/> after running the generator.
+    /// Used by <c>Verify.SourceGenerators</c> which needs the driver object
+    /// (not the run result) to produce snapshot files.
+    /// </summary>
+    public static GeneratorDriver CreateDriver(string source)
+    {
+        var parseOptions = new CSharpParseOptions(LanguageVersion.Latest);
+        var syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
+
+        var compilation = CSharpCompilation.Create(
+            assemblyName: "ConfigBoundNET.Tests.Snapshot",
+            syntaxTrees: new[] { syntaxTree },
+            references: References,
+            options: new CSharpCompilationOptions(
+                OutputKind.DynamicallyLinkedLibrary,
+                nullableContextOptions: NullableContextOptions.Enable));
+
+        var driver = CSharpGeneratorDriver.Create(
+            generators: new[] { new ConfigBoundGenerator().AsSourceGenerator() },
+            parseOptions: parseOptions);
+
+        return driver.RunGenerators(compilation);
+    }
+
+    /// <summary>
     /// Convenience: returns the generated source text for the single per-type
     /// output tree produced by the generator run (i.e. the emitted validator
     /// + binder file for the user's <c>[ConfigSection]</c> type).
