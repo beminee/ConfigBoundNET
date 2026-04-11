@@ -515,6 +515,14 @@ internal static class SourceEmitter
             case BindingStrategy.NestedConfig:
                 EmitNestedAssignment(writer, prop);
                 return;
+
+            case BindingStrategy.Array:
+                EmitCollectionAssignment(writer, prop);
+                return;
+
+            case BindingStrategy.Dictionary:
+                EmitDictionaryAssignment(writer, prop);
+                return;
         }
     }
 
@@ -768,6 +776,336 @@ internal static class SourceEmitter
     }
 
     // ─────────────────────────────────────────────────────────────────────
+    // Collection binding emission
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Emits binding code for array (<c>T[]</c>) and list-like (<c>List&lt;T&gt;</c>,
+    /// <c>IList&lt;T&gt;</c>, etc.) properties. Iterates
+    /// <c>section.GetSection("X").GetChildren()</c> and parses each child value
+    /// into a temporary <c>List&lt;T&gt;</c>, then assigns (with <c>.ToArray()</c>
+    /// for arrays).
+    /// </summary>
+    private static void EmitCollectionAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var sectionVar = LocalName(prop.Name, "Section");
+        var listVar = LocalName(prop.Name, "List");
+        var childVar = LocalName(prop.Name, "Child");
+        var elementKeyword = prop.CollectionElementKeyword ?? "string";
+
+        writer.Write("var ");
+        writer.Write(sectionVar);
+        writer.Write(" = section.GetSection(\"");
+        writer.Write(prop.Name);
+        writer.WriteLine("\");");
+
+        // Build the list type. For string elements, use string directly;
+        // for others, use the keyword (int, double, etc.) or FQN for enums/Guid/etc.
+        var elementTypeName = GetElementTypeName(prop.CollectionElementStrategy, elementKeyword);
+
+        writer.Write("var ");
+        writer.Write(listVar);
+        writer.Write(" = new global::System.Collections.Generic.List<");
+        writer.Write(elementTypeName);
+        writer.WriteLine(">();");
+
+        writer.Write("foreach (var ");
+        writer.Write(childVar);
+        writer.Write(" in ");
+        writer.Write(sectionVar);
+        writer.WriteLine(".GetChildren())");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        EmitElementParse(writer, prop.CollectionElementStrategy, elementKeyword, childVar, listVar);
+
+        writer.Indent--;
+        writer.WriteLine("}");
+
+        // Only assign if the section actually had children (preserves
+        // user-declared defaults when the section is absent).
+        writer.Write("if (");
+        writer.Write(listVar);
+        writer.WriteLine(".Count > 0)");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("this.");
+        writer.Write(prop.Name);
+        writer.Write(" = ");
+        writer.Write(listVar);
+        if (prop.IsCollectionArray)
+        {
+            writer.Write(".ToArray()");
+        }
+        writer.WriteLine(";");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Emits binding code for <c>Dictionary&lt;string, T&gt;</c> and its interfaces.
+    /// </summary>
+    private static void EmitDictionaryAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var sectionVar = LocalName(prop.Name, "Section");
+        var dictVar = LocalName(prop.Name, "Dict");
+        var childVar = LocalName(prop.Name, "Child");
+        var elementKeyword = prop.CollectionElementKeyword ?? "string";
+        var valueTypeName = GetElementTypeName(prop.CollectionElementStrategy, elementKeyword);
+
+        writer.Write("var ");
+        writer.Write(sectionVar);
+        writer.Write(" = section.GetSection(\"");
+        writer.Write(prop.Name);
+        writer.WriteLine("\");");
+
+        writer.Write("var ");
+        writer.Write(dictVar);
+        writer.Write(" = new global::System.Collections.Generic.Dictionary<string, ");
+        writer.Write(valueTypeName);
+        writer.WriteLine(">();");
+
+        writer.Write("foreach (var ");
+        writer.Write(childVar);
+        writer.Write(" in ");
+        writer.Write(sectionVar);
+        writer.WriteLine(".GetChildren())");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        EmitDictElementParse(writer, prop.CollectionElementStrategy, elementKeyword, childVar, dictVar);
+
+        writer.Indent--;
+        writer.WriteLine("}");
+
+        writer.Write("if (");
+        writer.Write(dictVar);
+        writer.WriteLine(".Count > 0)");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("this.");
+        writer.Write(prop.Name);
+        writer.Write(" = ");
+        writer.Write(dictVar);
+        writer.WriteLine(";");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Emits the per-element parse-and-add inside the foreach body for list/array collections.
+    /// </summary>
+    private static void EmitElementParse(
+        IndentedTextWriter writer, BindingStrategy elementStrategy, string elementKeyword,
+        string childVar, string listVar)
+    {
+        switch (elementStrategy)
+        {
+            case BindingStrategy.String:
+                writer.Write("if (");
+                writer.Write(childVar);
+                writer.Write(".Value is not null) ");
+                writer.Write(listVar);
+                writer.Write(".Add(");
+                writer.Write(childVar);
+                writer.WriteLine(".Value);");
+                break;
+
+            case BindingStrategy.Boolean:
+                writer.Write("if (");
+                writer.Write(childVar);
+                writer.Write(".Value is not null && bool.TryParse(");
+                writer.Write(childVar);
+                writer.Write(".Value, out var _cb_ep)) ");
+                writer.Write(listVar);
+                writer.WriteLine(".Add(_cb_ep);");
+                break;
+
+            case BindingStrategy.Integer:
+            case BindingStrategy.FloatingPoint:
+            {
+                var styles = elementStrategy == BindingStrategy.Integer
+                    ? "global::System.Globalization.NumberStyles.Integer"
+                    : "global::System.Globalization.NumberStyles.Float";
+                writer.Write("if (");
+                writer.Write(childVar);
+                writer.Write(".Value is not null && ");
+                writer.Write(elementKeyword);
+                writer.Write(".TryParse(");
+                writer.Write(childVar);
+                writer.Write(".Value, ");
+                writer.Write(styles);
+                writer.Write(", global::System.Globalization.CultureInfo.InvariantCulture, out var _cb_ep)) ");
+                writer.Write(listVar);
+                writer.WriteLine(".Add(_cb_ep);");
+                break;
+            }
+
+            case BindingStrategy.Guid:
+                EmitSimpleElementParse(writer, "global::System.Guid", childVar, listVar);
+                break;
+
+            case BindingStrategy.TimeSpan:
+                EmitSimpleElementParse(writer, "global::System.TimeSpan", childVar, listVar);
+                break;
+
+            case BindingStrategy.DateTime:
+                writer.Write("if (");
+                writer.Write(childVar);
+                writer.Write(".Value is not null && global::System.DateTime.TryParse(");
+                writer.Write(childVar);
+                writer.Write(".Value, global::System.Globalization.CultureInfo.InvariantCulture, global::System.Globalization.DateTimeStyles.RoundtripKind, out var _cb_ep)) ");
+                writer.Write(listVar);
+                writer.WriteLine(".Add(_cb_ep);");
+                break;
+
+            case BindingStrategy.DateTimeOffset:
+                writer.Write("if (");
+                writer.Write(childVar);
+                writer.Write(".Value is not null && global::System.DateTimeOffset.TryParse(");
+                writer.Write(childVar);
+                writer.Write(".Value, global::System.Globalization.CultureInfo.InvariantCulture, global::System.Globalization.DateTimeStyles.RoundtripKind, out var _cb_ep)) ");
+                writer.Write(listVar);
+                writer.WriteLine(".Add(_cb_ep);");
+                break;
+
+            case BindingStrategy.Uri:
+                writer.Write("if (");
+                writer.Write(childVar);
+                writer.Write(".Value is not null && global::System.Uri.TryCreate(");
+                writer.Write(childVar);
+                writer.Write(".Value, global::System.UriKind.Absolute, out var _cb_ep)) ");
+                writer.Write(listVar);
+                writer.WriteLine(".Add(_cb_ep);");
+                break;
+
+            case BindingStrategy.Enum:
+                writer.Write("if (");
+                writer.Write(childVar);
+                writer.Write(".Value is not null && global::System.Enum.TryParse<");
+                writer.Write(elementKeyword);
+                writer.Write(">(");
+                writer.Write(childVar);
+                writer.Write(".Value, ignoreCase: true, out var _cb_ep)) ");
+                writer.Write(listVar);
+                writer.WriteLine(".Add(_cb_ep);");
+                break;
+        }
+    }
+
+    /// <summary>Helper for Guid/TimeSpan element parsing (invariant culture TryParse).</summary>
+    private static void EmitSimpleElementParse(
+        IndentedTextWriter writer, string fqnType, string childVar, string listVar)
+    {
+        writer.Write("if (");
+        writer.Write(childVar);
+        writer.Write(".Value is not null && ");
+        writer.Write(fqnType);
+        writer.Write(".TryParse(");
+        writer.Write(childVar);
+        writer.Write(".Value, global::System.Globalization.CultureInfo.InvariantCulture, out var _cb_ep)) ");
+        writer.Write(listVar);
+        writer.WriteLine(".Add(_cb_ep);");
+    }
+
+    /// <summary>
+    /// Emits the per-element parse for dictionary values (key is always <c>child.Key</c>).
+    /// </summary>
+    private static void EmitDictElementParse(
+        IndentedTextWriter writer, BindingStrategy valueStrategy, string valueKeyword,
+        string childVar, string dictVar)
+    {
+        // For strings, just assign directly.
+        if (valueStrategy == BindingStrategy.String)
+        {
+            writer.Write("if (");
+            writer.Write(childVar);
+            writer.Write(".Value is not null) ");
+            writer.Write(dictVar);
+            writer.Write("[");
+            writer.Write(childVar);
+            writer.Write(".Key] = ");
+            writer.Write(childVar);
+            writer.WriteLine(".Value;");
+            return;
+        }
+
+        // For all other types, parse the value and assign on success.
+        // We reuse the list element parse pattern but target the dictionary.
+        // Build: if (child.Value is not null && T.TryParse(..., out var _cb_ep)) dict[child.Key] = _cb_ep;
+        switch (valueStrategy)
+        {
+            case BindingStrategy.Boolean:
+                writer.Write("if (");
+                writer.Write(childVar);
+                writer.Write(".Value is not null && bool.TryParse(");
+                writer.Write(childVar);
+                writer.Write(".Value, out var _cb_ep)) ");
+                break;
+
+            case BindingStrategy.Integer:
+            case BindingStrategy.FloatingPoint:
+            {
+                var styles = valueStrategy == BindingStrategy.Integer
+                    ? "global::System.Globalization.NumberStyles.Integer"
+                    : "global::System.Globalization.NumberStyles.Float";
+                writer.Write("if (");
+                writer.Write(childVar);
+                writer.Write(".Value is not null && ");
+                writer.Write(valueKeyword);
+                writer.Write(".TryParse(");
+                writer.Write(childVar);
+                writer.Write(".Value, ");
+                writer.Write(styles);
+                writer.Write(", global::System.Globalization.CultureInfo.InvariantCulture, out var _cb_ep)) ");
+                break;
+            }
+
+            case BindingStrategy.Enum:
+                writer.Write("if (");
+                writer.Write(childVar);
+                writer.Write(".Value is not null && global::System.Enum.TryParse<");
+                writer.Write(valueKeyword);
+                writer.Write(">(");
+                writer.Write(childVar);
+                writer.Write(".Value, ignoreCase: true, out var _cb_ep)) ");
+                break;
+
+            default:
+                // Guid, TimeSpan, DateTime, DateTimeOffset, Uri — handle generically
+                writer.Write("// Unsupported dictionary value type for element parse");
+                writer.WriteLine();
+                return;
+        }
+
+        writer.Write(dictVar);
+        writer.Write("[");
+        writer.Write(childVar);
+        writer.WriteLine(".Key] = _cb_ep;");
+    }
+
+    /// <summary>
+    /// Returns the C# type name to use in <c>List&lt;T&gt;</c> or
+    /// <c>Dictionary&lt;string, T&gt;</c> generic arguments.
+    /// </summary>
+    private static string GetElementTypeName(BindingStrategy strategy, string keyword)
+    {
+        return strategy switch
+        {
+            BindingStrategy.String => "string",
+            BindingStrategy.Boolean => "bool",
+            BindingStrategy.Integer or BindingStrategy.FloatingPoint => keyword,
+            BindingStrategy.Guid => "global::System.Guid",
+            BindingStrategy.TimeSpan => "global::System.TimeSpan",
+            BindingStrategy.DateTime => "global::System.DateTime",
+            BindingStrategy.DateTimeOffset => "global::System.DateTimeOffset",
+            BindingStrategy.Uri => "global::System.Uri",
+            BindingStrategy.Enum => keyword,
+            _ => "object",
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
     // DataAnnotations validation emission
     // ─────────────────────────────────────────────────────────────────────
 
@@ -946,6 +1284,11 @@ internal static class SourceEmitter
         writer.WriteLine("}");
     }
 
+    /// <summary>Returns "Length" for strings/arrays, "Count" for list/dictionary collections.</summary>
+    private static string SizeProperty(ConfigPropertyModel prop) =>
+        prop.Binding is BindingStrategy.Array && !prop.IsCollectionArray ? "Count" :
+        prop.Binding is BindingStrategy.Dictionary ? "Count" : "Length";
+
     /// <summary>Emits <c>if (options.X is not null &amp;&amp; (options.X.Length &lt; min || options.X.Length &gt; max))</c></summary>
     private static void EmitStringLengthCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop, DataAnnotationModel ann)
     {
@@ -958,15 +1301,20 @@ internal static class SourceEmitter
             return;
         }
 
+        var size = SizeProperty(prop);
         writer.Write("if (options.");
         writer.Write(prop.Name);
         writer.Write(" is not null && (options.");
         writer.Write(prop.Name);
-        writer.Write(".Length < ");
+        writer.Write('.');
+        writer.Write(size);
+        writer.Write(" < ");
         writer.Write(minLen);
         writer.Write(" || options.");
         writer.Write(prop.Name);
-        writer.Write(".Length > ");
+        writer.Write('.');
+        writer.Write(size);
+        writer.Write(" > ");
         writer.Write(maxLen.Value);
         writer.WriteLine("))");
         writer.WriteLine("{");
@@ -993,12 +1341,15 @@ internal static class SourceEmitter
         }
 
         var n = (int)ann.NumericArg1.Value;
+        var size = SizeProperty(prop);
 
         writer.Write("if (options.");
         writer.Write(prop.Name);
         writer.Write(" is not null && options.");
         writer.Write(prop.Name);
-        writer.Write(".Length < ");
+        writer.Write('.');
+        writer.Write(size);
+        writer.Write(" < ");
         writer.Write(n);
         writer.WriteLine(")");
         writer.WriteLine("{");
@@ -1023,12 +1374,15 @@ internal static class SourceEmitter
         }
 
         var n = (int)ann.NumericArg1.Value;
+        var size = SizeProperty(prop);
 
         writer.Write("if (options.");
         writer.Write(prop.Name);
         writer.Write(" is not null && options.");
         writer.Write(prop.Name);
-        writer.Write(".Length > ");
+        writer.Write('.');
+        writer.Write(size);
+        writer.Write(" > ");
         writer.Write(n);
         writer.WriteLine(")");
         writer.WriteLine("{");

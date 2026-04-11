@@ -10,7 +10,12 @@
     <TargetFramework>net10.0</TargetFramework>
     <RootNamespace>ConfigBoundNET.WebApi</RootNamespace>
     <IsPackable>false</IsPackable>
-    <NoWarn>$(NoWarn);CA1812;CA1852;CA1303;CA1515</NoWarn>
+    <!-- CA1812/CA1852: IOptions binding pattern false positives.
+         CA1303: string literals in example console output.
+         CA1515: public types in app (ASP.NET controllers need public).
+         CA1819/CA1002: arrays and List<T> on config records are intentional
+         — they demonstrate ConfigBoundNET's collection binding feature. -->
+    <NoWarn>$(NoWarn);CA1812;CA1852;CA1303;CA1515;CA1819;CA1002</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

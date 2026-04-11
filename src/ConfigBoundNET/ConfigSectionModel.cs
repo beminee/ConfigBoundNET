@@ -91,6 +91,20 @@ internal enum ConfigTypeKind
 /// reflection-free validation checks after the existing null/whitespace pass.
 /// Empty when no recognised annotations are present.
 /// </param>
+/// <param name="CollectionElementStrategy">
+/// For <see cref="BindingStrategy.Array"/> and <see cref="BindingStrategy.Dictionary"/>:
+/// how to parse each element value from <c>IConfigurationSection.GetChildren()</c>.
+/// <see cref="BindingStrategy.Unsupported"/> for non-collection properties.
+/// </param>
+/// <param name="CollectionElementKeyword">
+/// For collections: the C# keyword or fully qualified name of the element/value
+/// type, used to emit the per-element <c>TryParse</c> call and the generic
+/// <c>List&lt;T&gt;</c> / <c>Dictionary&lt;string, T&gt;</c> container.
+/// </param>
+/// <param name="IsCollectionArray">
+/// <see langword="true"/> when the property type is <c>T[]</c> (needs <c>.ToArray()</c>
+/// after building the list); <see langword="false"/> for <c>List&lt;T&gt;</c> and interfaces.
+/// </param>
 internal sealed record ConfigPropertyModel(
     string Name,
     bool IsRequired,
@@ -101,7 +115,10 @@ internal sealed record ConfigPropertyModel(
     string? NestedTypeFullyQualifiedName,
     string? EnumFullyQualifiedName,
     string? ParseTypeKeyword,
-    EquatableArray<DataAnnotationModel> DataAnnotations) : IEquatable<ConfigPropertyModel>;
+    EquatableArray<DataAnnotationModel> DataAnnotations,
+    BindingStrategy CollectionElementStrategy,
+    string? CollectionElementKeyword,
+    bool IsCollectionArray) : IEquatable<ConfigPropertyModel>;
 
 /// <summary>
 /// How the generated, reflection-free binder should read a property out of an
@@ -151,6 +168,12 @@ internal enum BindingStrategy
 
     /// <summary>A nested complex config type that is itself <c>[ConfigSection]</c>-annotated; bound by recursing into its generated <c>Bind</c> method.</summary>
     NestedConfig,
+
+    /// <summary>Array (<c>T[]</c>) or list-like collection (<c>List&lt;T&gt;</c>, <c>IList&lt;T&gt;</c>, etc.); elements parsed individually from <c>GetChildren()</c>.</summary>
+    Array,
+
+    /// <summary><c>Dictionary&lt;string, T&gt;</c> or <c>IDictionary&lt;string, T&gt;</c>; keys from <c>child.Key</c>, values parsed individually.</summary>
+    Dictionary,
 }
 
 /// <summary>
@@ -377,8 +400,9 @@ internal static class ModelBuilder
 
             // Scan for DataAnnotations attributes and convert them into
             // flat, equatable models the emitter can turn into explicit checks.
+            var isCollection = classification.Strategy is BindingStrategy.Array or BindingStrategy.Dictionary;
             var annotations = ExtractDataAnnotations(
-                property, classification.Strategy, isString, isRequired,
+                property, classification.Strategy, isString, isRequired, isCollection,
                 diagnostics, syntax);
 
             properties.Add(new ConfigPropertyModel(
@@ -391,7 +415,10 @@ internal static class ModelBuilder
                 NestedTypeFullyQualifiedName: classification.NestedTypeFullyQualifiedName,
                 EnumFullyQualifiedName: classification.EnumFullyQualifiedName,
                 ParseTypeKeyword: classification.ParseTypeKeyword,
-                DataAnnotations: new EquatableArray<DataAnnotationModel>(annotations.Count > 0 ? annotations.ToArray() : Array.Empty<DataAnnotationModel>())));
+                DataAnnotations: new EquatableArray<DataAnnotationModel>(annotations.Count > 0 ? annotations.ToArray() : Array.Empty<DataAnnotationModel>()),
+                CollectionElementStrategy: classification.CollectionElementStrategy,
+                CollectionElementKeyword: classification.CollectionElementKeyword,
+                IsCollectionArray: classification.IsCollectionArray));
         }
 
         if (properties.Count == 0)
@@ -491,34 +518,34 @@ internal static class ModelBuilder
         switch (type.SpecialType)
         {
             case SpecialType.System_String:
-                return new BindingClassification(BindingStrategy.String, false, null, null, null);
+                return new BindingClassification(BindingStrategy.String, false, null, null, null, BindingStrategy.Unsupported, null, false);
 
             case SpecialType.System_Boolean:
-                return new BindingClassification(BindingStrategy.Boolean, isNullableValueType, null, null, "bool");
+                return new BindingClassification(BindingStrategy.Boolean, isNullableValueType, null, null, "bool", BindingStrategy.Unsupported, null, false);
 
             case SpecialType.System_Byte:
-                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "byte");
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "byte", BindingStrategy.Unsupported, null, false);
             case SpecialType.System_SByte:
-                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "sbyte");
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "sbyte", BindingStrategy.Unsupported, null, false);
             case SpecialType.System_Int16:
-                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "short");
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "short", BindingStrategy.Unsupported, null, false);
             case SpecialType.System_UInt16:
-                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "ushort");
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "ushort", BindingStrategy.Unsupported, null, false);
             case SpecialType.System_Int32:
-                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "int");
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "int", BindingStrategy.Unsupported, null, false);
             case SpecialType.System_UInt32:
-                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "uint");
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "uint", BindingStrategy.Unsupported, null, false);
             case SpecialType.System_Int64:
-                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "long");
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "long", BindingStrategy.Unsupported, null, false);
             case SpecialType.System_UInt64:
-                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "ulong");
+                return new BindingClassification(BindingStrategy.Integer, isNullableValueType, null, null, "ulong", BindingStrategy.Unsupported, null, false);
 
             case SpecialType.System_Single:
-                return new BindingClassification(BindingStrategy.FloatingPoint, isNullableValueType, null, null, "float");
+                return new BindingClassification(BindingStrategy.FloatingPoint, isNullableValueType, null, null, "float", BindingStrategy.Unsupported, null, false);
             case SpecialType.System_Double:
-                return new BindingClassification(BindingStrategy.FloatingPoint, isNullableValueType, null, null, "double");
+                return new BindingClassification(BindingStrategy.FloatingPoint, isNullableValueType, null, null, "double", BindingStrategy.Unsupported, null, false);
             case SpecialType.System_Decimal:
-                return new BindingClassification(BindingStrategy.FloatingPoint, isNullableValueType, null, null, "decimal");
+                return new BindingClassification(BindingStrategy.FloatingPoint, isNullableValueType, null, null, "decimal", BindingStrategy.Unsupported, null, false);
         }
 
         // ── Enums (matched before the named-type sniff so System.Enum subtypes win). ──
@@ -529,7 +556,10 @@ internal static class ModelBuilder
                 isNullableValueType,
                 NestedTypeFullyQualifiedName: null,
                 EnumFullyQualifiedName: type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-                ParseTypeKeyword: null);
+                ParseTypeKeyword: null,
+                CollectionElementStrategy: BindingStrategy.Unsupported,
+                CollectionElementKeyword: null,
+                IsCollectionArray: false);
         }
 
         // ── Named non-special types: Guid, TimeSpan, DateTime, Uri, nested config. ──
@@ -537,21 +567,21 @@ internal static class ModelBuilder
         switch (fullName)
         {
             case "global::System.Guid":
-                return new BindingClassification(BindingStrategy.Guid, isNullableValueType, null, null, null);
+                return new BindingClassification(BindingStrategy.Guid, isNullableValueType, null, null, null, BindingStrategy.Unsupported, null, false);
 
             case "global::System.TimeSpan":
-                return new BindingClassification(BindingStrategy.TimeSpan, isNullableValueType, null, null, null);
+                return new BindingClassification(BindingStrategy.TimeSpan, isNullableValueType, null, null, null, BindingStrategy.Unsupported, null, false);
 
             case "global::System.DateTime":
-                return new BindingClassification(BindingStrategy.DateTime, isNullableValueType, null, null, null);
+                return new BindingClassification(BindingStrategy.DateTime, isNullableValueType, null, null, null, BindingStrategy.Unsupported, null, false);
 
             case "global::System.DateTimeOffset":
-                return new BindingClassification(BindingStrategy.DateTimeOffset, isNullableValueType, null, null, null);
+                return new BindingClassification(BindingStrategy.DateTimeOffset, isNullableValueType, null, null, null, BindingStrategy.Unsupported, null, false);
 
             case "global::System.Uri":
                 // Uri is a reference type, so the "nullable" form is just `Uri?`,
                 // not Nullable<Uri>. isNullableValueType therefore stays false.
-                return new BindingClassification(BindingStrategy.Uri, false, null, null, null);
+                return new BindingClassification(BindingStrategy.Uri, false, null, null, null, BindingStrategy.Unsupported, null, false);
         }
 
         // ── Nested complex configuration types. We accept any user-defined
@@ -567,11 +597,115 @@ internal static class ModelBuilder
                 IsNullableValueType: false,
                 NestedTypeFullyQualifiedName: nestedNamed.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
                 EnumFullyQualifiedName: null,
-                ParseTypeKeyword: null);
+                ParseTypeKeyword: null,
+                CollectionElementStrategy: BindingStrategy.Unsupported,
+                CollectionElementKeyword: null,
+                IsCollectionArray: false);
         }
 
-        return new BindingClassification(BindingStrategy.Unsupported, false, null, null, null);
+        // ── Arrays (T[]) ──────────────────────────────────────────────────
+        if (type is IArrayTypeSymbol arrayType && arrayType.Rank == 1)
+        {
+            var elem = ClassifyElement(arrayType.ElementType);
+            if (elem.Strategy != BindingStrategy.Unsupported)
+            {
+                return new BindingClassification(
+                    BindingStrategy.Array, false, null, null, null,
+                    elem.Strategy, elem.Keyword, IsCollectionArray: true);
+            }
+        }
+
+        // ── List<T>, IList<T>, ICollection<T>, IEnumerable<T>, etc. ──────
+        if (type is INamedTypeSymbol { IsGenericType: true } genericType)
+        {
+            var origDef = genericType.OriginalDefinition.ToDisplayString();
+
+            if (genericType.TypeArguments.Length == 1 && IsListLikeInterface(origDef))
+            {
+                var elem = ClassifyElement(genericType.TypeArguments[0]);
+                if (elem.Strategy != BindingStrategy.Unsupported)
+                {
+                    return new BindingClassification(
+                        BindingStrategy.Array, false, null, null, null,
+                        elem.Strategy, elem.Keyword, IsCollectionArray: false);
+                }
+            }
+
+            // ── Dictionary<string, T>, IDictionary<string, T>, etc. ──────
+            if (genericType.TypeArguments.Length == 2 && IsDictionaryLikeInterface(origDef))
+            {
+                // Only string keys are supported; IConfiguration child keys are always strings.
+                if (genericType.TypeArguments[0].SpecialType == SpecialType.System_String)
+                {
+                    var elem = ClassifyElement(genericType.TypeArguments[1]);
+                    if (elem.Strategy != BindingStrategy.Unsupported)
+                    {
+                        return new BindingClassification(
+                            BindingStrategy.Dictionary, false, null, null, null,
+                            elem.Strategy, elem.Keyword, IsCollectionArray: false);
+                    }
+                }
+            }
+        }
+
+        return new BindingClassification(BindingStrategy.Unsupported, false, null, null, null, BindingStrategy.Unsupported, null, false);
     }
+
+    /// <summary>
+    /// Classifies an element type for use inside a collection. Returns the
+    /// <see cref="BindingStrategy"/> and a keyword/FQN for the element.
+    /// Only supports scalar types (no nested collections or complex types).
+    /// </summary>
+    private static (BindingStrategy Strategy, string? Keyword) ClassifyElement(ITypeSymbol type)
+    {
+        switch (type.SpecialType)
+        {
+            case SpecialType.System_String:  return (BindingStrategy.String, null);
+            case SpecialType.System_Boolean: return (BindingStrategy.Boolean, "bool");
+            case SpecialType.System_Byte:    return (BindingStrategy.Integer, "byte");
+            case SpecialType.System_SByte:   return (BindingStrategy.Integer, "sbyte");
+            case SpecialType.System_Int16:   return (BindingStrategy.Integer, "short");
+            case SpecialType.System_UInt16:  return (BindingStrategy.Integer, "ushort");
+            case SpecialType.System_Int32:   return (BindingStrategy.Integer, "int");
+            case SpecialType.System_UInt32:  return (BindingStrategy.Integer, "uint");
+            case SpecialType.System_Int64:   return (BindingStrategy.Integer, "long");
+            case SpecialType.System_UInt64:  return (BindingStrategy.Integer, "ulong");
+            case SpecialType.System_Single:  return (BindingStrategy.FloatingPoint, "float");
+            case SpecialType.System_Double:  return (BindingStrategy.FloatingPoint, "double");
+            case SpecialType.System_Decimal: return (BindingStrategy.FloatingPoint, "decimal");
+        }
+
+        if (type.TypeKind == TypeKind.Enum)
+        {
+            return (BindingStrategy.Enum, type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
+        }
+
+        var fullName = type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        return fullName switch
+        {
+            "global::System.Guid"           => (BindingStrategy.Guid, null),
+            "global::System.TimeSpan"       => (BindingStrategy.TimeSpan, null),
+            "global::System.DateTime"       => (BindingStrategy.DateTime, null),
+            "global::System.DateTimeOffset" => (BindingStrategy.DateTimeOffset, null),
+            "global::System.Uri"            => (BindingStrategy.Uri, null),
+            _                               => (BindingStrategy.Unsupported, null),
+        };
+    }
+
+    /// <summary>Returns true for List-like generic type definitions.</summary>
+    private static bool IsListLikeInterface(string originalDefinition) => originalDefinition is
+        "System.Collections.Generic.List<T>" or
+        "System.Collections.Generic.IList<T>" or
+        "System.Collections.Generic.ICollection<T>" or
+        "System.Collections.Generic.IEnumerable<T>" or
+        "System.Collections.Generic.IReadOnlyList<T>" or
+        "System.Collections.Generic.IReadOnlyCollection<T>";
+
+    /// <summary>Returns true for Dictionary-like generic type definitions.</summary>
+    private static bool IsDictionaryLikeInterface(string originalDefinition) => originalDefinition is
+        "System.Collections.Generic.Dictionary<TKey, TValue>" or
+        "System.Collections.Generic.IDictionary<TKey, TValue>" or
+        "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>";
 
     /// <summary>Returns true when <paramref name="type"/> declares a [ConfigSection] attribute.</summary>
     private static bool HasConfigSectionAttribute(INamedTypeSymbol type)
@@ -606,6 +740,7 @@ internal static class ModelBuilder
         BindingStrategy binding,
         bool isString,
         bool isRequired,
+        bool isCollection,
         List<DiagnosticInfo> diagnostics,
         TypeDeclarationSyntax syntax)
     {
@@ -669,7 +804,7 @@ internal static class ModelBuilder
                     break;
 
                 case "StringLengthAttribute":
-                    if (!isString)
+                    if (!isString && !isCollection)
                     {
                         diagnostics.Add(new DiagnosticInfo(
                             DiagnosticDescriptors.LengthOnNonString.Id,
@@ -699,7 +834,7 @@ internal static class ModelBuilder
                     break;
 
                 case "MinLengthAttribute":
-                    if (!isString)
+                    if (!isString && !isCollection)
                     {
                         diagnostics.Add(new DiagnosticInfo(
                             DiagnosticDescriptors.LengthOnNonString.Id,
@@ -718,7 +853,7 @@ internal static class ModelBuilder
                     break;
 
                 case "MaxLengthAttribute":
-                    if (!isString)
+                    if (!isString && !isCollection)
                     {
                         diagnostics.Add(new DiagnosticInfo(
                             DiagnosticDescriptors.LengthOnNonString.Id,
@@ -859,4 +994,7 @@ internal readonly record struct BindingClassification(
     bool IsNullableValueType,
     string? NestedTypeFullyQualifiedName,
     string? EnumFullyQualifiedName,
-    string? ParseTypeKeyword);
+    string? ParseTypeKeyword,
+    BindingStrategy CollectionElementStrategy,
+    string? CollectionElementKeyword,
+    bool IsCollectionArray);

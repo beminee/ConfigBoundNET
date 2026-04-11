@@ -320,6 +320,29 @@ public sealed class SnapshotTests
         return VerifyDriver(Source);
     }
 
+    // ── Collections ───────────────────────────────────────────────────────
+
+    [Fact]
+    public Task Array_and_List_and_Dictionary()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            namespace MyApp;
+
+            [ConfigSection("Net")]
+            public partial record NetConfig
+            {
+                public string[] Hosts { get; init; } = System.Array.Empty<string>();
+                public List<int> Ports { get; init; } = new();
+                public Dictionary<string, string> Headers { get; init; } = new();
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
     // ── Custom validation hook ───────────────────────────────────────────
 
     [Fact]

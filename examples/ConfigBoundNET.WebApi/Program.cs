@@ -23,11 +23,13 @@ builder.Services
     .AddDatabaseConfig(builder.Configuration)
     .AddAuthConfig(builder.Configuration)
     .AddEmailConfig(builder.Configuration)
+    .AddCorsConfig(builder.Configuration)
     .AddRateLimitingConfig(builder.Configuration);
 
 builder.Services.AddOptions<DatabaseConfig>().ValidateOnStart();
 builder.Services.AddOptions<AuthConfig>().ValidateOnStart();
 builder.Services.AddOptions<EmailConfig>().ValidateOnStart();
+builder.Services.AddOptions<CorsConfig>().ValidateOnStart();
 builder.Services.AddOptions<RateLimitingConfig>().ValidateOnStart();
 
 builder.Services.AddControllers();

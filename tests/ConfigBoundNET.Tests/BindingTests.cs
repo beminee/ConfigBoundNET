@@ -331,18 +331,138 @@ public sealed class BindingTests
             {
                 public string Conn { get; init; } = default!;
 
-                // Arrays are not in the supported set yet.
-                public string[] Hosts { get; init; } = System.Array.Empty<string>();
+                // object is not in the supported binding set.
+                public object Payload { get; init; } = default!;
             }
             """;
 
-        // Just run the generator (not the binding harness) so we can inspect
-        // the diagnostic without worrying about the runtime emit succeeding.
         var result = GeneratorHarness.Run(Source);
 
         Assert.Contains(
             result.Diagnostics,
-            d => d.Id == "CB0010" && d.GetMessage().Contains("Hosts"));
+            d => d.Id == "CB0010" && d.GetMessage().Contains("Payload"));
+    }
+
+    // ── Collection binding tests ─────────────────────────────────────────
+
+    [Fact]
+    public void String_array_is_bound_from_section()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public string[] Hosts { get; init; } = System.Array.Empty<string>();
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "TestConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Test:Hosts:0"] = "host1.example.com",
+                ["Test:Hosts:1"] = "host2.example.com",
+            });
+
+        var hosts = (System.Array)GetProp(bound, "Hosts")!;
+        Assert.Equal(2, hosts.Length);
+        Assert.Equal("host1.example.com", hosts.GetValue(0));
+        Assert.Equal("host2.example.com", hosts.GetValue(1));
+    }
+
+    [Fact]
+    public void Int_array_is_bound_from_section()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public int[] Ports { get; init; } = System.Array.Empty<int>();
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "TestConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Test:Ports:0"] = "5432",
+                ["Test:Ports:1"] = "5433",
+                ["Test:Ports:2"] = "5434",
+            });
+
+        var ports = (System.Array)GetProp(bound, "Ports")!;
+        Assert.Equal(3, ports.Length);
+        Assert.Equal(5432, ports.GetValue(0));
+    }
+
+    [Fact]
+    public void String_dictionary_is_bound_from_section()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public Dictionary<string, string> Headers { get; init; } = new();
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "TestConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Test:Headers:X-Api-Key"] = "secret",
+                ["Test:Headers:Content-Type"] = "application/json",
+            });
+
+        // Dictionary is bound — access via reflection.
+        var headers = GetProp(bound, "Headers")!;
+        var count = (int)headers.GetType().GetProperty("Count")!.GetValue(headers)!;
+        Assert.Equal(2, count);
+    }
+
+    [Fact]
+    public void Absent_collection_preserves_default_value()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public string[] Tags { get; init; } = new[] { "default" };
+            }
+            """;
+
+        // No Test:Tags keys in config → default should be preserved.
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "TestConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Test:OtherKey"] = "noise",
+            });
+
+        var tags = (System.Array)GetProp(bound, "Tags")!;
+        Assert.Single(tags);
+        Assert.Equal("default", tags.GetValue(0));
     }
 
     /// <summary>
