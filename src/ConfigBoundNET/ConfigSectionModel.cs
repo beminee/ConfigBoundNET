@@ -298,12 +298,23 @@ internal static class ModelBuilder
         //    so Attributes[0] is safe.
         var attribute = context.Attributes[0];
         string? sectionName = null;
-        if (attribute.ConstructorArguments.Length == 1 &&
-            attribute.ConstructorArguments[0].Value is string s)
+
+        if (attribute.ConstructorArguments.Length == 0)
+        {
+            // Parameterless [ConfigSection] — infer the section name from
+            // the type name by stripping common suffixes (Config, Options, etc.).
+            sectionName = SectionNameHelper.InferSectionName(symbol.Name);
+        }
+        else if (attribute.ConstructorArguments.Length == 1 &&
+                 attribute.ConstructorArguments[0].Value is string s)
         {
             sectionName = s;
         }
 
+        // If the user explicitly passed an empty/whitespace string via
+        // [ConfigSection("")], that's a mistake — error with CB0002.
+        // The parameterless path above always produces a non-empty name
+        // so this only fires for the explicit-string constructor.
         if (string.IsNullOrWhiteSpace(sectionName))
         {
             diagnostics.Add(new DiagnosticInfo(

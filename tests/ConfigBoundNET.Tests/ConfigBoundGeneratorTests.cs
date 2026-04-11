@@ -137,6 +137,76 @@ public sealed class ConfigBoundGeneratorTests
     }
 
     [Fact]
+    public void Parameterless_ConfigSection_infers_section_name_from_type()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+            }
+            """;
+
+        var result = GeneratorHarness.Run(Source);
+
+        // No diagnostics — the parameterless attribute is valid.
+        Assert.Empty(result.Diagnostics);
+
+        var generated = result.GetEmittedConfigSource();
+
+        // Section name should be inferred: "DbConfig" → "Db".
+        Assert.Contains("public const string SectionName = \"Db\";", generated);
+    }
+
+    [Fact]
+    public void Parameterless_ConfigSection_strips_Options_suffix()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection]
+            public partial record PaymentsOptions
+            {
+                public string Key { get; init; } = default!;
+            }
+            """;
+
+        var result = GeneratorHarness.Run(Source);
+        Assert.Empty(result.Diagnostics);
+
+        var generated = result.GetEmittedConfigSource();
+        Assert.Contains("public const string SectionName = \"Payments\";", generated);
+    }
+
+    [Fact]
+    public void Parameterless_ConfigSection_keeps_full_name_when_no_suffix()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection]
+            public partial record Foo
+            {
+                public string Bar { get; init; } = default!;
+            }
+            """;
+
+        var result = GeneratorHarness.Run(Source);
+        Assert.Empty(result.Diagnostics);
+
+        var generated = result.GetEmittedConfigSource();
+        Assert.Contains("public const string SectionName = \"Foo\";", generated);
+    }
+
+    [Fact]
     public void Nested_type_produces_CB0003()
     {
         const string Source = """

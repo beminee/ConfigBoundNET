@@ -126,6 +126,17 @@ namespace ConfigBoundNET
     [global::System.Diagnostics.Conditional(""CONFIGBOUNDNET_KEEP_ATTRIBUTES"")]
     internal sealed class ConfigSectionAttribute : global::System.Attribute
     {
+        /// <summary>
+        /// Initializes a new instance with an inferred section name.
+        /// The generator derives the name from the type name by stripping
+        /// common suffixes (<c>Config</c>, <c>Options</c>, <c>Settings</c>,
+        /// <c>Configuration</c>). E.g. <c>DbConfig</c> becomes <c>""Db""</c>.
+        /// </summary>
+        public ConfigSectionAttribute()
+        {
+            SectionName = string.Empty;
+        }
+
         /// <summary>Initializes a new instance of the <see cref=""ConfigSectionAttribute""/> class.</summary>
         /// <param name=""sectionName"">
         /// The configuration section name, e.g. <c>""Db""</c> for a section that lives
@@ -137,7 +148,7 @@ namespace ConfigBoundNET
             SectionName = sectionName;
         }
 
-        /// <summary>Gets the configuration section name supplied at construction time.</summary>
+        /// <summary>Gets the configuration section name supplied at construction time, or empty if inferred.</summary>
         public string SectionName { get; }
     }
 }

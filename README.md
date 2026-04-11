@@ -359,7 +359,7 @@ ConfigBoundNET/
 # Restore + build the whole solution (generator, tests, AOT smoke, example).
 dotnet build ConfigBoundNET.sln
 
-# 53 unit + integration tests covering binding, validation, diagnostics, and code fixes.
+# 56 unit + integration tests covering binding, validation, diagnostics, and code fixes.
 dotnet test  tests/ConfigBoundNET.Tests/ConfigBoundNET.Tests.csproj
 ```
 
@@ -421,7 +421,7 @@ ConfigBoundNET is currently at **v1.0.0**. The pieces below are tracked toward n
 
 ### Tier 2 — quality-of-life
 
-- [ ] **`[ConfigSection]` with no argument** infers the section name from the type name (`DbConfig` → `"Db"`, stripping trailing `Config` / `Options` / `Settings`).
+- [x] **`[ConfigSection]` with no argument.** ✅ `[ConfigSection] partial record DbConfig` infers `"Db"` by stripping `Config`/`Options`/`Settings`/`Configuration` suffixes. Explicit `[ConfigSection("")]` still errors with CB0002 (the code fix offers to fill in the inferred name).
 - [ ] **Nested config types.** If `DbConfig.Retry` is a non-nullable `RetryConfig`, recurse the null/required checks into it. Currently complex properties are ignored.
 - [ ] **Collection support.** Detect `List<T>`, `T[]`, `Dictionary<string, T>` and at minimum require non-empty when non-nullable.
 - [ ] **Snapshot tests with `Verify.SourceGenerators`** so refactors of the emitter cannot silently change generated output.

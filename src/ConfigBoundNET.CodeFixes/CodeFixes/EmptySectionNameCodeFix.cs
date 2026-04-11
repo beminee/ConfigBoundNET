@@ -28,13 +28,6 @@ internal sealed class EmptySectionNameCodeFix : CodeFixProvider
     public override FixAllProvider? GetFixAllProvider() =>
         WellKnownFixAllProviders.BatchFixer;
 
-    /// <summary>
-    /// Suffixes to strip from the type name, tried longest-first so
-    /// <c>Configuration</c> is tried before <c>Config</c>.
-    /// </summary>
-    private static readonly string[] Suffixes =
-        { "Configuration", "Settings", "Options", "Config" };
-
     public override async Task RegisterCodeFixesAsync(CodeFixContext context)
     {
         var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
@@ -46,7 +39,9 @@ internal sealed class EmptySectionNameCodeFix : CodeFixProvider
             return;
         }
 
-        var inferredName = InferSectionName(typeDecl.Identifier.Text);
+        // Delegate to the shared helper in the generator project so the
+        // suffix-stripping logic is defined in exactly one place.
+        var inferredName = SectionNameHelper.InferSectionName(typeDecl.Identifier.Text);
 
         context.RegisterCodeFix(
             CodeAction.Create(
@@ -54,25 +49,6 @@ internal sealed class EmptySectionNameCodeFix : CodeFixProvider
                 createChangedDocument: ct => ReplaceSectionNameAsync(context.Document, typeDecl, inferredName, ct),
                 equivalenceKey: "CB0002_InferSectionName"),
             diagnostic);
-    }
-
-    /// <summary>
-    /// Derives a configuration section name from a type name by stripping
-    /// common suffixes. Made <c>internal</c> so unit tests can exercise it
-    /// directly without constructing a full Roslyn workspace.
-    /// </summary>
-    internal static string InferSectionName(string typeName)
-    {
-        foreach (var suffix in Suffixes)
-        {
-            if (typeName.Length > suffix.Length &&
-                typeName.EndsWith(suffix, StringComparison.Ordinal))
-            {
-                return typeName.Substring(0, typeName.Length - suffix.Length);
-            }
-        }
-
-        return typeName;
     }
 
     private static async Task<Document> ReplaceSectionNameAsync(
