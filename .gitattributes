@@ -1,0 +1,5 @@
+# Verify snapshot files: collapse in PR diffs, exclude from language stats.
+*.verified.cs  linguist-generated=true diff=csharp
+*.verified.txt linguist-generated=true
+*.received.cs  linguist-generated=true diff=csharp
+*.received.txt linguist-generated=true

@@ -1,0 +1,18 @@
+﻿{
+  Diagnostics: [
+    {
+      Location: : (4,0)-(5,34),
+      Message: 'EmptyConfig' has no public writable or init-only properties so ConfigBoundNET has nothing to bind from configuration,
+      Severity: Warning,
+      WarningLevel: 1,
+      Descriptor: {
+        Id: CB0004,
+        Title: Config type has no bindable properties,
+        MessageFormat: '{0}' has no public writable or init-only properties so ConfigBoundNET has nothing to bind from configuration,
+        Category: ConfigBoundNET,
+        DefaultSeverity: Warning,
+        IsEnabledByDefault: true
+      }
+    }
+  ]
+}

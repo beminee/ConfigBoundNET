@@ -31,17 +31,20 @@ public sealed class DiagnosticsController : ControllerBase
     private readonly IOptions<DatabaseConfig> _db;
     private readonly IOptions<AuthConfig> _auth;
     private readonly IOptionsMonitor<EmailConfig> _email;
+    private readonly IOptions<CorsConfig> _cors;
     private readonly IOptionsMonitor<RateLimitingConfig> _rateLimiting;
 
     public DiagnosticsController(
         IOptions<DatabaseConfig> db,
         IOptions<AuthConfig> auth,
         IOptionsMonitor<EmailConfig> email,
+        IOptions<CorsConfig> cors,
         IOptionsMonitor<RateLimitingConfig> rateLimiting)
     {
         _db = db;
         _auth = auth;
         _email = email;
+        _cors = cors;
         _rateLimiting = rateLimiting;
     }
 
@@ -55,6 +58,7 @@ public sealed class DiagnosticsController : ControllerBase
         var db = _db.Value;
         var auth = _auth.Value;
         var email = _email.CurrentValue;
+        var cors = _cors.Value;
         var rl = _rateLimiting.CurrentValue;
 
         return Ok(new
@@ -86,6 +90,15 @@ public sealed class DiagnosticsController : ControllerBase
                 email.UseTls,
                 Username = email.Username is not null ? "***" : "(not set)",
                 Password = email.Password is not null ? "***" : "(not set)",
+            },
+            Cors = new
+            {
+                cors.AllowedOrigins,
+                cors.AllowedMethods,
+                cors.AllowedHeaders,
+                cors.ExposedHeaders,
+                cors.AllowCredentials,
+                cors.PreflightMaxAgeSeconds,
             },
             RateLimiting = new
             {

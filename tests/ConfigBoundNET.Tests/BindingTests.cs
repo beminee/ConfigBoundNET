@@ -331,18 +331,218 @@ public sealed class BindingTests
             {
                 public string Conn { get; init; } = default!;
 
-                // Arrays are not in the supported set yet.
-                public string[] Hosts { get; init; } = System.Array.Empty<string>();
+                // object is not in the supported binding set.
+                public object Payload { get; init; } = default!;
             }
             """;
 
-        // Just run the generator (not the binding harness) so we can inspect
-        // the diagnostic without worrying about the runtime emit succeeding.
         var result = GeneratorHarness.Run(Source);
 
         Assert.Contains(
             result.Diagnostics,
-            d => d.Id == "CB0010" && d.GetMessage().Contains("Hosts"));
+            d => d.Id == "CB0010" && d.GetMessage().Contains("Payload"));
+    }
+
+    // ── Collection binding tests ─────────────────────────────────────────
+
+    [Fact]
+    public void String_array_is_bound_from_section()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public string[] Hosts { get; init; } = System.Array.Empty<string>();
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "TestConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Test:Hosts:0"] = "host1.example.com",
+                ["Test:Hosts:1"] = "host2.example.com",
+            });
+
+        var hosts = (System.Array)GetProp(bound, "Hosts")!;
+        Assert.Equal(2, hosts.Length);
+        Assert.Equal("host1.example.com", hosts.GetValue(0));
+        Assert.Equal("host2.example.com", hosts.GetValue(1));
+    }
+
+    [Fact]
+    public void Int_array_is_bound_from_section()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public int[] Ports { get; init; } = System.Array.Empty<int>();
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "TestConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Test:Ports:0"] = "5432",
+                ["Test:Ports:1"] = "5433",
+                ["Test:Ports:2"] = "5434",
+            });
+
+        var ports = (System.Array)GetProp(bound, "Ports")!;
+        Assert.Equal(3, ports.Length);
+        Assert.Equal(5432, ports.GetValue(0));
+    }
+
+    [Fact]
+    public void String_dictionary_is_bound_from_section()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public Dictionary<string, string> Headers { get; init; } = new();
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "TestConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Test:Headers:X-Api-Key"] = "secret",
+                ["Test:Headers:Content-Type"] = "application/json",
+            });
+
+        // Dictionary is bound — access via reflection.
+        var headers = GetProp(bound, "Headers")!;
+        var count = (int)headers.GetType().GetProperty("Count")!.GetValue(headers)!;
+        Assert.Equal(2, count);
+    }
+
+    [Fact]
+    public void Absent_collection_preserves_default_value()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public string[] Tags { get; init; } = new[] { "default" };
+            }
+            """;
+
+        // No Test:Tags keys in config → default should be preserved.
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "TestConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Test:OtherKey"] = "noise",
+            });
+
+        var tags = (System.Array)GetProp(bound, "Tags")!;
+        Assert.Single(tags);
+        Assert.Equal("default", tags.GetValue(0));
+    }
+
+    // ── Nested config validation tests ─────────────────────────────────
+
+    [Fact]
+    public void Nested_config_validation_recurses_into_inner_type()
+    {
+        // RetryConfig has [Range(1, 20)] on MaxAttempts. Setting it to 99
+        // should fail validation even though the parent DbConfig itself
+        // is well-formed. This proves the parent Validator calls the nested
+        // Validator recursively.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public string Conn { get; init; } = default!;
+                public RetryConfig Retry { get; init; } = default!;
+            }
+
+            [ConfigSection("__inner__")]
+            public partial record RetryConfig
+            {
+                [Range(1, 20)]
+                public int MaxAttempts { get; init; }
+            }
+            """;
+
+        var ex = Assert.ThrowsAny<System.Exception>(() =>
+            GeneratorHarness.CompileAndBind(
+                Source,
+                "TestConfig",
+                new System.Collections.Generic.Dictionary<string, string?>
+                {
+                    ["Test:Conn"] = "hello",
+                    ["Test:Retry:MaxAttempts"] = "99",
+                }));
+
+        Assert.Contains("must be between 1 and 20", ex.InnerException?.Message ?? ex.Message);
+    }
+
+    [Fact]
+    public void Nested_config_validation_passes_when_inner_is_valid()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public string Conn { get; init; } = default!;
+                public RetryConfig Retry { get; init; } = default!;
+            }
+
+            [ConfigSection("__inner__")]
+            public partial record RetryConfig
+            {
+                [Range(1, 20)]
+                public int MaxAttempts { get; init; }
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "TestConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Test:Conn"] = "hello",
+                ["Test:Retry:MaxAttempts"] = "5",
+            });
+
+        var nested = GetProp(bound, "Retry")!;
+        Assert.Equal(5, GetProp(nested, "MaxAttempts"));
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 // Copyright (c) ConfigBoundNET contributors. Licensed under the GPL-3 License.
 
+using ConfigBoundNET;
 using ConfigBoundNET.CodeFixes;
 using Xunit;
 
@@ -35,7 +36,7 @@ public sealed class CodeFixTests
     [InlineData("MyConfigOptions", "MyConfig")]    // only strips the last suffix
     public void InferSectionName_returns_expected(string typeName, string expected)
     {
-        Assert.Equal(expected, EmptySectionNameCodeFix.InferSectionName(typeName));
+        Assert.Equal(expected, SectionNameHelper.InferSectionName(typeName));
     }
 
     // ── FixableDiagnosticIds wiring ──────────────────────────────────────

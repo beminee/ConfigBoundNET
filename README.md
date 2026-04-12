@@ -200,7 +200,30 @@ The generator emits a **reflection-free** binder, so the set of property types i
 
 All numeric, date, and time parsing uses `CultureInfo.InvariantCulture` so config values are portable across locales.
 
-Collections (`T[]`, `List<T>`, `Dictionary<string, T>`) are not yet supported and produce CB0010. They are tracked under Tier 2 of the roadmap below.
+Collections are fully supported:
+
+| Collection type | Generated container |
+| --- | --- |
+| `T[]` | `List<T>` → `.ToArray()` |
+| `List<T>`, `IList<T>`, `ICollection<T>`, `IEnumerable<T>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>` | `new List<T>()` |
+| `Dictionary<string, T>`, `IDictionary<string, T>`, `IReadOnlyDictionary<string, T>` | `new Dictionary<string, T>()` |
+
+Element types can be any scalar from the table above. If the config section is absent, user-declared defaults are preserved.
+
+## Unsupported collections
+
+These are explicitly **out of scope** for now and will remain `Unsupported` (CB0010):
+
+| Type | Why |
+|---|---|
+| `HashSet<T>`, `SortedSet<T>` | IConfiguration doesn't distinguish sets from lists; semantically the user wants deduplication, but config arrays often don't guarantee uniqueness. Low demand. Add later if requested. |
+| `Dictionary<TKey, T>` where TKey != `string` | IConfigurationSection child keys are always strings. Non-string-keyed dictionaries would require a parse step for the key itself and `IConfiguration` doesn't model that. |
+| `List<ComplexType>` where ComplexType is a `[ConfigSection]`-annotated record | Each array element would be a sub-section with its own key-value children. Doable (the child is an `IConfigurationSection` itself, and we'd call `new ComplexType(child)`), but it adds recursive complexity. **Tracked as a follow-up.** |
+| `T[][]`, `List<List<T>>`, nested collections | IConfiguration's flat key model (`Section:0:0`) technically supports these, but the code generation becomes deeply nested and the use case is rare. Not worth the complexity. |
+| `ImmutableArray<T>`, `ImmutableList<T>`, `FrozenSet<T>` | Would require extra package references (`System.Collections.Immutable`) in the consumer. Support later if demanded. |
+| `Queue<T>`, `Stack<T>`, `LinkedList<T>`, `ConcurrentBag<T>` | Exotic for config. No demand. |
+| `ReadOnlySpan<T>`, `Memory<T>` | Can't be stored as properties; not applicable to IOptions binding. |
+
 
 ---
 
@@ -359,7 +382,7 @@ ConfigBoundNET/
 # Restore + build the whole solution (generator, tests, AOT smoke, example).
 dotnet build ConfigBoundNET.sln
 
-# 53 unit + integration tests covering binding, validation, diagnostics, and code fixes.
+# 77 unit + integration + snapshot tests.
 dotnet test  tests/ConfigBoundNET.Tests/ConfigBoundNET.Tests.csproj
 ```
 
@@ -421,10 +444,10 @@ ConfigBoundNET is currently at **v1.0.0**. The pieces below are tracked toward n
 
 ### Tier 2 — quality-of-life
 
-- [ ] **`[ConfigSection]` with no argument** infers the section name from the type name (`DbConfig` → `"Db"`, stripping trailing `Config` / `Options` / `Settings`).
-- [ ] **Nested config types.** If `DbConfig.Retry` is a non-nullable `RetryConfig`, recurse the null/required checks into it. Currently complex properties are ignored.
-- [ ] **Collection support.** Detect `List<T>`, `T[]`, `Dictionary<string, T>` and at minimum require non-empty when non-nullable.
-- [ ] **Snapshot tests with `Verify.SourceGenerators`** so refactors of the emitter cannot silently change generated output.
+- [x] **`[ConfigSection]` with no argument.** ✅ `[ConfigSection] partial record DbConfig` infers `"Db"` by stripping `Config`/`Options`/`Settings`/`Configuration` suffixes. Explicit `[ConfigSection("")]` still errors with CB0002 (the code fix offers to fill in the inferred name).
+- [x] **Nested config validation.** ✅ The parent's `Validator.Validate()` now recursively calls each nested `[ConfigSection]` type's own `Validator`, merging any failures into the parent's result. Required-field checks, DataAnnotations, and custom hooks on nested types all fire as part of the parent's validation pass.
+- [x] **Collection support.** ✅ `T[]`, `List<T>`, `IList<T>`, `ICollection<T>`, `IEnumerable<T>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>`, `Dictionary<string, T>`, `IDictionary<string, T>`, and `IReadOnlyDictionary<string, T>` are all supported. Elements can be any scalar type. Absent sections preserve user-declared defaults. `[MinLength]`/`[MaxLength]` work on collections (checking `.Count`/`.Length`). CB0007 relaxed to allow length attributes on collections.
+- [x] **Snapshot tests with `Verify.SourceGenerators`.** ✅ 14 scenarios pinning the exact generated output via 44 `.verified.cs` files under `tests/ConfigBoundNET.Tests/Snapshots/`. Covers: basic record, parameterless attribute, class (non-record), global namespace, all primitive types, enums, nullable/optional, nested config, Range + StringLength, RegularExpression, Url + EmailAddress, MinLength + MaxLength, multiple annotations on one property, and the empty-type ValidateCustom hook. Any emitter change surfaces as a diff that must be explicitly accepted.
 - [ ] **Generator perf test** asserting incremental cache hits via `GeneratorDriver.GetRunResult().Results[0].TrackedSteps` — protects against accidentally putting non-equatable types in the pipeline.
 - [ ] **SourceLink + deterministic builds + `.snupkg`** so users get source debugging on nuget.org.
 - [ ] **`CHANGELOG.md`** wired into the package via `PackageReleaseNotes`.

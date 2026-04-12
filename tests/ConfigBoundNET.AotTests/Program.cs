@@ -61,6 +61,11 @@ Check(failures, nameof(db.MinLevel), db.MinLevel, LogLevel.Warning);
 Check(failures, "Retry.MaxAttempts", db.Retry.MaxAttempts, 5);
 Check(failures, "Retry.Backoff", db.Retry.Backoff, TimeSpan.FromSeconds(2));
 
+// Collection binding: confirm arrays are bound from indexed children.
+Check(failures, "Tags.Length", db.Tags.Length, 2);
+Check(failures, "Tags[0]", db.Tags[0], "primary");
+Check(failures, "Tags[1]", db.Tags[1], "replica");
+
 // ── Report. ────────────────────────────────────────────────────────────────
 if (failures.Count == 0)
 {
@@ -146,6 +151,13 @@ namespace ConfigBoundNET.AotTests
         public Uri Endpoint { get; init; } = default!;
 
         public LogLevel MinLevel { get; init; }
+
+        /// <summary>
+        /// String array. Exercises the collection binder under AOT:
+        /// <c>section.GetSection("Tags").GetChildren()</c> iteration +
+        /// <c>.ToArray()</c>.
+        /// </summary>
+        public string[] Tags { get; init; } = System.Array.Empty<string>();
 
         /// <summary>
         /// Nested complex type. The classifier returns
