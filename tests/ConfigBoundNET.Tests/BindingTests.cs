@@ -465,6 +465,86 @@ public sealed class BindingTests
         Assert.Equal("default", tags.GetValue(0));
     }
 
+    // ── Nested config validation tests ─────────────────────────────────
+
+    [Fact]
+    public void Nested_config_validation_recurses_into_inner_type()
+    {
+        // RetryConfig has [Range(1, 20)] on MaxAttempts. Setting it to 99
+        // should fail validation even though the parent DbConfig itself
+        // is well-formed. This proves the parent Validator calls the nested
+        // Validator recursively.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public string Conn { get; init; } = default!;
+                public RetryConfig Retry { get; init; } = default!;
+            }
+
+            [ConfigSection("__inner__")]
+            public partial record RetryConfig
+            {
+                [Range(1, 20)]
+                public int MaxAttempts { get; init; }
+            }
+            """;
+
+        var ex = Assert.ThrowsAny<System.Exception>(() =>
+            GeneratorHarness.CompileAndBind(
+                Source,
+                "TestConfig",
+                new System.Collections.Generic.Dictionary<string, string?>
+                {
+                    ["Test:Conn"] = "hello",
+                    ["Test:Retry:MaxAttempts"] = "99",
+                }));
+
+        Assert.Contains("must be between 1 and 20", ex.InnerException?.Message ?? ex.Message);
+    }
+
+    [Fact]
+    public void Nested_config_validation_passes_when_inner_is_valid()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                public string Conn { get; init; } = default!;
+                public RetryConfig Retry { get; init; } = default!;
+            }
+
+            [ConfigSection("__inner__")]
+            public partial record RetryConfig
+            {
+                [Range(1, 20)]
+                public int MaxAttempts { get; init; }
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "TestConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Test:Conn"] = "hello",
+                ["Test:Retry:MaxAttempts"] = "5",
+            });
+
+        var nested = GetProp(bound, "Retry")!;
+        Assert.Equal(5, GetProp(nested, "MaxAttempts"));
+    }
+
     /// <summary>
     /// Reflection helper that mirrors what a real consumer would write
     /// statically as <c>options.Conn</c>. Used here only because the test type

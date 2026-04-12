@@ -200,6 +200,19 @@ internal static class SourceEmitter
             }
         }
 
+        // ── Nested config validation: recursively invoke the inner type's
+        //    generated Validator so its required-field checks, DataAnnotations,
+        //    and custom hooks all run as part of the parent's validation pass.
+        foreach (var prop in model.Properties)
+        {
+            if (prop.Binding != BindingStrategy.NestedConfig || prop.NestedTypeFullyQualifiedName is null)
+            {
+                continue;
+            }
+
+            WriteNestedValidation(writer, prop);
+        }
+
         // ── Custom validation hook: call the partial method on the options
         //    instance. If the user has not implemented it, the C# compiler
         //    removes the call site entirely (zero cost). If they have, their
@@ -771,6 +784,44 @@ internal static class SourceEmitter
         writer.Write('(');
         writer.Write(subsection);
         writer.WriteLine(");");
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Emits a recursive validation call for a nested <c>[ConfigSection]</c>
+    /// property. Instantiates the inner type's generated <c>Validator</c>,
+    /// calls <c>Validate</c>, and merges any failures into the parent's list.
+    /// </summary>
+    private static void WriteNestedValidation(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var resultVar = LocalName(prop.Name, "Result");
+
+        writer.Write("if (options.");
+        writer.Write(prop.Name);
+        writer.WriteLine(" is not null)");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        writer.Write("var ");
+        writer.Write(resultVar);
+        writer.Write(" = new ");
+        writer.Write(prop.NestedTypeFullyQualifiedName);
+        writer.Write(".Validator().Validate(name, options.");
+        writer.Write(prop.Name);
+        writer.WriteLine(");");
+
+        writer.Write("if (");
+        writer.Write(resultVar);
+        writer.WriteLine(".Failed)");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.AddRange(");
+        writer.Write(resultVar);
+        writer.WriteLine(".Failures);");
+        writer.Indent--;
+        writer.WriteLine("}");
+
         writer.Indent--;
         writer.WriteLine("}");
     }

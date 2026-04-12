@@ -382,7 +382,7 @@ ConfigBoundNET/
 # Restore + build the whole solution (generator, tests, AOT smoke, example).
 dotnet build ConfigBoundNET.sln
 
-# 75 unit + integration + snapshot tests.
+# 77 unit + integration + snapshot tests.
 dotnet test  tests/ConfigBoundNET.Tests/ConfigBoundNET.Tests.csproj
 ```
 
@@ -445,7 +445,7 @@ ConfigBoundNET is currently at **v1.0.0**. The pieces below are tracked toward n
 ### Tier 2 — quality-of-life
 
 - [x] **`[ConfigSection]` with no argument.** ✅ `[ConfigSection] partial record DbConfig` infers `"Db"` by stripping `Config`/`Options`/`Settings`/`Configuration` suffixes. Explicit `[ConfigSection("")]` still errors with CB0002 (the code fix offers to fill in the inferred name).
-- [ ] **Nested config types.** If `DbConfig.Retry` is a non-nullable `RetryConfig`, recurse the null/required checks into it. Currently complex properties are ignored.
+- [x] **Nested config validation.** ✅ The parent's `Validator.Validate()` now recursively calls each nested `[ConfigSection]` type's own `Validator`, merging any failures into the parent's result. Required-field checks, DataAnnotations, and custom hooks on nested types all fire as part of the parent's validation pass.
 - [x] **Collection support.** ✅ `T[]`, `List<T>`, `IList<T>`, `ICollection<T>`, `IEnumerable<T>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>`, `Dictionary<string, T>`, `IDictionary<string, T>`, and `IReadOnlyDictionary<string, T>` are all supported. Elements can be any scalar type. Absent sections preserve user-declared defaults. `[MinLength]`/`[MaxLength]` work on collections (checking `.Count`/`.Length`). CB0007 relaxed to allow length attributes on collections.
 - [x] **Snapshot tests with `Verify.SourceGenerators`.** ✅ 14 scenarios pinning the exact generated output via 44 `.verified.cs` files under `tests/ConfigBoundNET.Tests/Snapshots/`. Covers: basic record, parameterless attribute, class (non-record), global namespace, all primitive types, enums, nullable/optional, nested config, Range + StringLength, RegularExpression, Url + EmailAddress, MinLength + MaxLength, multiple annotations on one property, and the empty-type ValidateCustom hook. Any emitter change surfaces as a diff that must be explicitly accepted.
 - [ ] **Generator perf test** asserting incremental cache hits via `GeneratorDriver.GetRunResult().Results[0].TrackedSteps` — protects against accidentally putting non-equatable types in the pipeline.

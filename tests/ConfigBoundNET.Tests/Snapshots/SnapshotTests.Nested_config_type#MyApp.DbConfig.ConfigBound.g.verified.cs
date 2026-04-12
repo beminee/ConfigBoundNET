@@ -64,6 +64,14 @@ partial record DbConfig
             {
                 failures.Add("[Db:Retry] is required but was null.");
             }
+            if (options.Retry is not null)
+            {
+                var _cb_RetryResult = new global::MyApp.RetryPolicy.Validator().Validate(name, options.Retry);
+                if (_cb_RetryResult.Failed)
+                {
+                    failures.AddRange(_cb_RetryResult.Failures);
+                }
+            }
             
             options.ValidateCustom(failures);
             
