@@ -363,6 +363,9 @@ Annotate the inner type with `[ConfigSection]` too. Both types get their own gen
 **Why does `AddDbConfig` return `IServiceCollection` rather than `OptionsBuilder<T>`?**
 So you can fluently chain other `services.AddX(...)` calls. If you want to tack extra validators onto the options pipeline, call `services.AddOptions<DbConfig>()` afterwards and chain from there (the generator's registration is idempotent).
 
+**How does this compare to Microsoft's `[OptionsValidator]` source generator?**
+Microsoft ships two built-in generators: `[OptionsValidator]` (generates validation from DataAnnotations) and `EnableConfigurationBindingGenerator` (generates AOT-safe binding). ConfigBoundNET replaces **both** with a single `[ConfigSection]` attribute and adds features neither provides: section name management (explicit or inferred), one-line DI extension methods, nullability-based required-field inference, custom cross-field validation hooks, collection binding, recursive nested validation, build-time diagnostics (CB0001-CB0010), and IDE code fixes. See [Comparison with Microsoft Generators](docs/comparison-with-microsoft.md) for a full feature matrix.
+
 ---
 
 ## Repository layout

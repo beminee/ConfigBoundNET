@@ -16,4 +16,5 @@
 
 - **[Architecture](architecture.md)** — internal pipeline, project structure, file-by-file guide
 - **[Design Philosophy](design-philosophy.md)** — the five principles, trade-offs, what ConfigBoundNET is and isn't
+- **[Comparison with Microsoft Generators](comparison-with-microsoft.md)** — feature matrix vs `[OptionsValidator]` and `EnableConfigurationBindingGenerator`, when to use which
 - **[Examples](examples.md)** — walkthrough of both example projects with feature matrix
