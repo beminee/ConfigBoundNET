@@ -1245,15 +1245,15 @@ internal static class SourceEmitter
                 break;
 
             case DataAnnotationKind.RegularExpression:
-                EmitRegexCheck(writer, model, prop);
+                EmitRegexCheck(writer, model, prop, ann);
                 break;
 
             case DataAnnotationKind.Url:
-                EmitUrlCheck(writer, model, prop);
+                EmitUrlCheck(writer, model, prop, ann);
                 break;
 
             case DataAnnotationKind.EmailAddress:
-                EmitEmailCheck(writer, model, prop);
+                EmitEmailCheck(writer, model, prop, ann);
                 break;
 
             case DataAnnotationKind.AllowedValues:
@@ -1322,15 +1322,8 @@ internal static class SourceEmitter
         writer.WriteLine(")");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
-        writer.Write(prop.Name);
-        writer.Write("] must be between ");
-        writer.Write(min);
-        writer.Write(" and ");
-        writer.Write(max);
-        writer.WriteLine(".\");");
+        var defaultMsg = $"[{model.SectionName}:{prop.Name}] must be between {min} and {max}.";
+        EmitFailureMessage(writer, model, prop, ann, defaultMsg, arg1: min, arg2: max);
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1339,6 +1332,48 @@ internal static class SourceEmitter
     private static string SizeProperty(ConfigPropertyModel prop) =>
         prop.Binding is BindingStrategy.Array && !prop.IsCollectionArray ? "Count" :
         prop.Binding is BindingStrategy.Dictionary ? "Count" : "Length";
+
+    /// <summary>
+    /// Emits a <c>failures.Add("...")</c> line using either the user's custom
+    /// <c>ErrorMessage</c> (with <c>{0}</c>, <c>{1}</c>, <c>{2}</c> placeholders
+    /// substituted at generator time) or a built-in default message.
+    /// <c>{0}</c> resolves to the <c>[SectionName:PropertyName]</c> prefix,
+    /// <c>{1}</c> to <paramref name="arg1"/>, and <c>{2}</c> to <paramref name="arg2"/>.
+    /// </summary>
+    private static void EmitFailureMessage(
+        IndentedTextWriter writer,
+        ConfigSectionModel model,
+        ConfigPropertyModel prop,
+        DataAnnotationModel ann,
+        string defaultMessage,
+        string? arg1 = null,
+        string? arg2 = null)
+    {
+        string message;
+
+        if (ann.ErrorMessage is null)
+        {
+            message = defaultMessage;
+        }
+        else
+        {
+            // The user-supplied ErrorMessage may contain {0}, {1}, {2}
+            // placeholders. We substitute them at generator time so the
+            // runtime code is a plain string literal with no allocations.
+            //   {0} → "[SectionName:PropertyName]" (the display name)
+            //   {1} → first arg (min for [Range], etc.)
+            //   {2} → second arg (max for [Range], etc.)
+            var displayName = "[" + Escape(model.SectionName) + ":" + prop.Name + "]";
+            message = ann.ErrorMessage
+                .Replace("{0}", displayName)
+                .Replace("{1}", arg1 ?? string.Empty)
+                .Replace("{2}", arg2 ?? string.Empty);
+        }
+
+        writer.Write("failures.Add(\"");
+        writer.Write(Escape(message));
+        writer.WriteLine("\");");
+    }
 
     /// <summary>Emits <c>if (options.X is not null &amp;&amp; (options.X.Length &lt; min || options.X.Length &gt; max))</c></summary>
     private static void EmitStringLengthCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop, DataAnnotationModel ann)
@@ -1370,15 +1405,10 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
-        writer.Write(prop.Name);
-        writer.Write("] must have length between ");
-        writer.Write(minLen);
-        writer.Write(" and ");
-        writer.Write(maxLen.Value);
-        writer.WriteLine(".\");");
+        var defaultMsg = $"[{model.SectionName}:{prop.Name}] must have length between {minLen} and {maxLen.Value}.";
+        EmitFailureMessage(writer, model, prop, ann, defaultMsg,
+            arg1: minLen.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            arg2: maxLen.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1405,13 +1435,9 @@ internal static class SourceEmitter
         writer.WriteLine(")");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
-        writer.Write(prop.Name);
-        writer.Write("] must have minimum length ");
-        writer.Write(n);
-        writer.WriteLine(".\");");
+        var defaultMinMsg = $"[{model.SectionName}:{prop.Name}] must have minimum length {n}.";
+        EmitFailureMessage(writer, model, prop, ann, defaultMinMsg,
+            arg1: n.ToString(System.Globalization.CultureInfo.InvariantCulture));
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1438,19 +1464,15 @@ internal static class SourceEmitter
         writer.WriteLine(")");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
-        writer.Write(prop.Name);
-        writer.Write("] must have maximum length ");
-        writer.Write(n);
-        writer.WriteLine(".\");");
+        var defaultMaxMsg = $"[{model.SectionName}:{prop.Name}] must have maximum length {n}.";
+        EmitFailureMessage(writer, model, prop, ann, defaultMaxMsg,
+            arg1: n.ToString(System.Globalization.CultureInfo.InvariantCulture));
         writer.Indent--;
         writer.WriteLine("}");
     }
 
     /// <summary>Emits <c>if (options.X is not null &amp;&amp; !_cb_Regex_{X}.IsMatch(options.X))</c></summary>
-    private static void EmitRegexCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop)
+    private static void EmitRegexCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop, DataAnnotationModel ann)
     {
         writer.Write("if (options.");
         writer.Write(prop.Name);
@@ -1461,17 +1483,14 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
-        writer.Write(prop.Name);
-        writer.WriteLine("] does not match the required pattern.\");");
+        var defaultMsg = $"[{model.SectionName}:{prop.Name}] does not match the required pattern.";
+        EmitFailureMessage(writer, model, prop, ann, defaultMsg);
         writer.Indent--;
         writer.WriteLine("}");
     }
 
     /// <summary>Emits <c>if (options.X is not null &amp;&amp; !Uri.TryCreate(options.X, Absolute, out _))</c></summary>
-    private static void EmitUrlCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop)
+    private static void EmitUrlCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop, DataAnnotationModel ann)
     {
         writer.Write("if (options.");
         writer.Write(prop.Name);
@@ -1480,17 +1499,14 @@ internal static class SourceEmitter
         writer.WriteLine(", global::System.UriKind.Absolute, out _))");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
-        writer.Write(prop.Name);
-        writer.WriteLine("] is not a valid absolute URL.\");");
+        var defaultMsg = $"[{model.SectionName}:{prop.Name}] is not a valid absolute URL.";
+        EmitFailureMessage(writer, model, prop, ann, defaultMsg);
         writer.Indent--;
         writer.WriteLine("}");
     }
 
     /// <summary>Emits <c>if (options.X is not null &amp;&amp; !_cb_Regex_Email_{X}.IsMatch(options.X))</c></summary>
-    private static void EmitEmailCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop)
+    private static void EmitEmailCheck(IndentedTextWriter writer, ConfigSectionModel model, ConfigPropertyModel prop, DataAnnotationModel ann)
     {
         writer.Write("if (options.");
         writer.Write(prop.Name);
@@ -1501,11 +1517,8 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
-        writer.Write(prop.Name);
-        writer.WriteLine("] is not a valid email address.\");");
+        var defaultMsg = $"[{model.SectionName}:{prop.Name}] is not a valid email address.";
+        EmitFailureMessage(writer, model, prop, ann, defaultMsg);
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1533,13 +1546,9 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
-        writer.Write(prop.Name);
-        writer.Write("] must be one of: ");
-        writer.Write(string.Join(", ", ann.ValuesArg.AsArray()));
-        writer.WriteLine(".\");");
+        var allowedList = string.Join(", ", ann.ValuesArg.AsArray());
+        var defaultAllowedMsg = $"[{model.SectionName}:{prop.Name}] must be one of: {allowedList}.";
+        EmitFailureMessage(writer, model, prop, ann, defaultAllowedMsg, arg1: allowedList);
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1567,13 +1576,9 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
-        writer.Write(prop.Name);
-        writer.Write("] must not be one of: ");
-        writer.Write(string.Join(", ", ann.ValuesArg.AsArray()));
-        writer.WriteLine(".\");");
+        var deniedList = string.Join(", ", ann.ValuesArg.AsArray());
+        var defaultDeniedMsg = $"[{model.SectionName}:{prop.Name}] must not be one of: {deniedList}.";
+        EmitFailureMessage(writer, model, prop, ann, defaultDeniedMsg, arg1: deniedList);
         writer.Indent--;
         writer.WriteLine("}");
     }

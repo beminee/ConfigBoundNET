@@ -89,9 +89,18 @@ internal enum DataAnnotationKind
 /// and <see cref="DataAnnotationKind.DeniedValues"/>, stored as C# literal strings.
 /// Empty for all other kinds.
 /// </param>
+/// <param name="ErrorMessage">
+/// Optional custom error message from the attribute's <c>ErrorMessage</c> named
+/// argument. Supports <c>{0}</c> (property display name), <c>{1}</c> (first
+/// numeric arg), and <c>{2}</c> (second numeric arg) format placeholders,
+/// matching the behaviour of <c>System.ComponentModel.DataAnnotations</c>
+/// attributes. Null when the attribute doesn't specify a custom message;
+/// the emitter then uses its built-in default.
+/// </param>
 internal sealed record DataAnnotationModel(
     DataAnnotationKind Kind,
     string? StringArg1,
     double? NumericArg1,
     double? NumericArg2,
-    EquatableArray<string> ValuesArg) : IEquatable<DataAnnotationModel>;
+    EquatableArray<string> ValuesArg,
+    string? ErrorMessage) : IEquatable<DataAnnotationModel>;

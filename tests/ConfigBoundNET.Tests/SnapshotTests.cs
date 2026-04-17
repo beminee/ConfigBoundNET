@@ -320,6 +320,29 @@ public sealed class SnapshotTests
         return VerifyDriver(Source);
     }
 
+    [Fact]
+    public Task Annotation_with_custom_ErrorMessage()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                [Range(1, 65535, ErrorMessage = "Port {0} must be between {1} and {2}.")]
+                public int Port { get; init; } = 8080;
+
+                [RegularExpression(@"^https?://", ErrorMessage = "Must be an http(s) URL.")]
+                public string Endpoint { get; init; } = default!;
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
     // ── Collections ───────────────────────────────────────────────────────
 
     [Fact]

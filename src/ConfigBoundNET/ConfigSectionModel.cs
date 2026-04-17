@@ -760,6 +760,19 @@ internal static class ModelBuilder
             // Strip the namespace prefix to get a simple switch key.
             var simpleName = fqn.Substring(DaNamespace.Length);
 
+            // Read the ErrorMessage named argument if the user supplied one.
+            // All ValidationAttribute-derived attributes inherit this property,
+            // so we read it uniformly for every matched attribute.
+            string? errorMessage = null;
+            foreach (var named in attr.NamedArguments)
+            {
+                if (named.Key == "ErrorMessage" && named.Value.Value is string em)
+                {
+                    errorMessage = em;
+                    break;
+                }
+            }
+
             switch (simpleName)
             {
                 case "RequiredAttribute":
@@ -776,7 +789,8 @@ internal static class ModelBuilder
                     result.Add(new DataAnnotationModel(
                         DataAnnotationKind.Required,
                         null, null, null,
-                        new EquatableArray<string>(Array.Empty<string>())));
+                        new EquatableArray<string>(Array.Empty<string>()),
+                        errorMessage));
                     break;
 
                 case "RangeAttribute":
@@ -798,7 +812,8 @@ internal static class ModelBuilder
                             result.Add(new DataAnnotationModel(
                                 DataAnnotationKind.Range,
                                 null, min.Value, max.Value,
-                                new EquatableArray<string>(Array.Empty<string>())));
+                                new EquatableArray<string>(Array.Empty<string>()),
+                        errorMessage));
                         }
                     }
                     break;
@@ -829,7 +844,8 @@ internal static class ModelBuilder
                         result.Add(new DataAnnotationModel(
                             DataAnnotationKind.StringLength,
                             null, maxLen, minLen,
-                            new EquatableArray<string>(Array.Empty<string>())));
+                            new EquatableArray<string>(Array.Empty<string>()),
+                        errorMessage));
                     }
                     break;
 
@@ -848,7 +864,8 @@ internal static class ModelBuilder
                         result.Add(new DataAnnotationModel(
                             DataAnnotationKind.MinLength,
                             null, ConvertToDouble(attr.ConstructorArguments[0]), null,
-                            new EquatableArray<string>(Array.Empty<string>())));
+                            new EquatableArray<string>(Array.Empty<string>()),
+                        errorMessage));
                     }
                     break;
 
@@ -867,7 +884,8 @@ internal static class ModelBuilder
                         result.Add(new DataAnnotationModel(
                             DataAnnotationKind.MaxLength,
                             null, ConvertToDouble(attr.ConstructorArguments[0]), null,
-                            new EquatableArray<string>(Array.Empty<string>())));
+                            new EquatableArray<string>(Array.Empty<string>()),
+                        errorMessage));
                     }
                     break;
 
@@ -893,7 +911,8 @@ internal static class ModelBuilder
                         result.Add(new DataAnnotationModel(
                             DataAnnotationKind.RegularExpression,
                             pattern, null, null,
-                            new EquatableArray<string>(Array.Empty<string>())));
+                            new EquatableArray<string>(Array.Empty<string>()),
+                        errorMessage));
                     }
                     break;
 
@@ -901,28 +920,32 @@ internal static class ModelBuilder
                     result.Add(new DataAnnotationModel(
                         DataAnnotationKind.Url,
                         null, null, null,
-                        new EquatableArray<string>(Array.Empty<string>())));
+                        new EquatableArray<string>(Array.Empty<string>()),
+                        errorMessage));
                     break;
 
                 case "EmailAddressAttribute":
                     result.Add(new DataAnnotationModel(
                         DataAnnotationKind.EmailAddress,
                         null, null, null,
-                        new EquatableArray<string>(Array.Empty<string>())));
+                        new EquatableArray<string>(Array.Empty<string>()),
+                        errorMessage));
                     break;
 
                 case "AllowedValuesAttribute":
                     result.Add(new DataAnnotationModel(
                         DataAnnotationKind.AllowedValues,
                         null, null, null,
-                        ExtractValuesArg(attr)));
+                        ExtractValuesArg(attr),
+                        errorMessage));
                     break;
 
                 case "DeniedValuesAttribute":
                     result.Add(new DataAnnotationModel(
                         DataAnnotationKind.DeniedValues,
                         null, null, null,
-                        ExtractValuesArg(attr)));
+                        ExtractValuesArg(attr),
+                        errorMessage));
                     break;
             }
         }

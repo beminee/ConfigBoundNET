@@ -392,4 +392,119 @@ public sealed class DataAnnotationsTests
 
         Assert.Contains("does not match the required pattern", ex.InnerException?.Message ?? ex.Message);
     }
+
+    // ── ErrorMessage support ─────────────────────────────────────────────
+
+    [Fact]
+    public void Range_ErrorMessage_overrides_default_and_substitutes_placeholders()
+    {
+        // {0} = "[SectionName:PropName]", {1} = min, {2} = max.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                [Range(1, 65535, ErrorMessage = "Port {0} must be between {1} and {2}.")]
+                public int Port { get; init; } = 5432;
+            }
+            """;
+
+        var ex = Assert.ThrowsAny<System.Exception>(() =>
+            GeneratorHarness.CompileAndBind(
+                Source,
+                "TestConfig",
+                new System.Collections.Generic.Dictionary<string, string?> { ["Test:Port"] = "0" }));
+
+        var message = ex.InnerException?.Message ?? ex.Message;
+
+        // Custom message is present; default "must be between" is NOT (they'd coexist if defaults weren't suppressed).
+        Assert.Contains("Port [Test:Port] must be between 1 and 65535.", message);
+    }
+
+    [Fact]
+    public void RegularExpression_ErrorMessage_without_placeholders_is_used_verbatim()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                [RegularExpression(@"^https?://", ErrorMessage = "Must be an http(s) URL.")]
+                public string Endpoint { get; init; } = default!;
+            }
+            """;
+
+        var ex = Assert.ThrowsAny<System.Exception>(() =>
+            GeneratorHarness.CompileAndBind(
+                Source,
+                "TestConfig",
+                new System.Collections.Generic.Dictionary<string, string?> { ["Test:Endpoint"] = "ftp://example.com" }));
+
+        var message = ex.InnerException?.Message ?? ex.Message;
+        Assert.Contains("Must be an http(s) URL.", message);
+        // Default message should NOT appear since ErrorMessage overrides it.
+        Assert.DoesNotContain("does not match the required pattern", message);
+    }
+
+    [Fact]
+    public void MinLength_ErrorMessage_supports_arg1_placeholder()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                [MinLength(8, ErrorMessage = "{0}: at least {1} chars required.")]
+                public string Password { get; init; } = default!;
+            }
+            """;
+
+        var ex = Assert.ThrowsAny<System.Exception>(() =>
+            GeneratorHarness.CompileAndBind(
+                Source,
+                "TestConfig",
+                new System.Collections.Generic.Dictionary<string, string?> { ["Test:Password"] = "short" }));
+
+        var message = ex.InnerException?.Message ?? ex.Message;
+        Assert.Contains("[Test:Password]: at least 8 chars required.", message);
+    }
+
+    [Fact]
+    public void Range_without_ErrorMessage_uses_default_message()
+    {
+        // Regression: confirm the default-message path still works.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Test")]
+            public partial record TestConfig
+            {
+                [Range(1, 10)]
+                public int Count { get; init; }
+            }
+            """;
+
+        var ex = Assert.ThrowsAny<System.Exception>(() =>
+            GeneratorHarness.CompileAndBind(
+                Source,
+                "TestConfig",
+                new System.Collections.Generic.Dictionary<string, string?> { ["Test:Count"] = "99" }));
+
+        Assert.Contains("must be between 1 and 10", ex.InnerException?.Message ?? ex.Message);
+    }
 }

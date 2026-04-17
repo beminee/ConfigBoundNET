@@ -128,6 +128,29 @@ if (options.Environment is not null && !new[] { "development", "staging", "produ
     failures.Add("[Section:Environment] must be one of: development, staging, production.");
 ```
 
+### Custom error messages (`ErrorMessage`)
+
+Every supported annotation honors the standard `ErrorMessage` named argument. The string can contain `{0}`, `{1}`, and `{2}` placeholders that are substituted **at generator time** (not runtime), producing zero-allocation string literals.
+
+```csharp
+[Range(1, 65535, ErrorMessage = "Port {0} must be between {1} and {2}.")]
+public int Port { get; init; } = 5432;
+```
+
+Placeholder meanings:
+- `{0}` — the `[SectionName:PropertyName]` prefix that identifies the config key
+- `{1}` — the first argument (min for `[Range]`, length for `[MinLength]`/`[MaxLength]`/`[StringLength]` min, comma-separated values for `[AllowedValues]`/`[DeniedValues]`)
+- `{2}` — the second argument (max for `[Range]`, max length for `[StringLength]`)
+
+A `Port = 0` value with the example above produces:
+```
+Port [Db:Port] must be between 1 and 65535.
+```
+
+When `ErrorMessage` is omitted, ConfigBoundNET falls back to its built-in default format (`"[Section:Property] must be between {min} and {max}."`).
+
+Because substitution happens at build time, the runtime code is a plain string-literal `failures.Add("Port [Db:Port] must be...")` — no `string.Format`, no allocations, no reflection. The trade-off is that placeholders must be compile-time constants (you can't reference other properties or runtime values), which matches how `ValidationAttribute` uses these placeholders anyway.
+
 ### Null guards
 
 Every string-targeted annotation check is guarded with `options.X is not null &&` so that null values are caught by the Layer 1 required check, not by an NRE in the annotation check.

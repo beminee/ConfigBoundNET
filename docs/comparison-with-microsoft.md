@@ -58,7 +58,7 @@ This intercepts `services.Configure<T>(IConfiguration)` and `config.GetSection("
 | **Build-time diagnostics** | No | No | **Yes** (CB0001–CB0010) |
 | **IDE code fixes** | No | No | **Yes** (5 lightbulb actions) |
 | **Build-time regex validation** | No | N/A | **Yes** (CB0008) |
-| **`ErrorMessage` on attributes** | Yes | N/A | Not yet |
+| **`ErrorMessage` on attributes** | Yes | N/A | **Yes** (`{0}`, `{1}`, `{2}` substituted at generator time) |
 | **Change-token / reload** | N/A | Implicit via `Configure<T>` | **Yes** (explicit `ConfigurationChangeTokenSource`) |
 | **Ships with SDK** | Yes | Yes | No (NuGet package) |
 | **Package count** | 0 (built-in) | 0 (built-in) | 1 |
@@ -116,13 +116,11 @@ builder.Services.AddSettingsOptions(builder.Configuration);
 
 1. **First-party** — ships with the SDK, no extra NuGet dependency to adopt or version-manage.
 
-2. **`ErrorMessage` support** — `[Range(0, 1000, ErrorMessage = "Value for {0} must be between {1} and {2}.")]` is honored in the generated validation. ConfigBoundNET currently uses its own fixed message format.
+2. **`[ValidateObjectMembers]`** — explicit opt-in for nested validation gives fine-grained control over which nested types get validated. ConfigBoundNET validates all `[ConfigSection]`-annotated nested types automatically.
 
-3. **`[ValidateObjectMembers]`** — explicit opt-in for nested validation gives fine-grained control over which nested types get validated. ConfigBoundNET validates all `[ConfigSection]`-annotated nested types automatically.
+3. **Attribute replacement** — Microsoft's generator replaces `[Range]`, `[MinLength]`, `[MaxLength]` with source-generated AOT-friendly attribute implementations that faithfully reproduce the original BCL behavior (including `IComparable`-based comparison, `OperandType` conversion, exclusive bounds). ConfigBoundNET emits simpler `if (x < min || x > max)` checks, which are sufficient for configuration but don't support the full `ValidationAttribute` contract.
 
-4. **Attribute replacement** — Microsoft's generator replaces `[Range]`, `[MinLength]`, `[MaxLength]` with source-generated AOT-friendly attribute implementations that faithfully reproduce the original BCL behavior (including `IComparable`-based comparison). ConfigBoundNET emits simpler `if (x < min || x > max)` checks, which are sufficient for configuration but don't support the full `ValidationAttribute` contract.
-
-5. **Broader adoption** — as a built-in feature, it's more likely to be familiar to the .NET community and has Microsoft's long-term support commitment.
+4. **Broader adoption** — as a built-in feature, it's more likely to be familiar to the .NET community and has Microsoft's long-term support commitment.
 
 ## Where ConfigBoundNET is better
 
