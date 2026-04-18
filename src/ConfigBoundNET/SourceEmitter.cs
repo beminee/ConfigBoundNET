@@ -929,7 +929,8 @@ internal static class SourceEmitter
         writer.Write("var ");
         writer.Write(resultVar);
         writer.Write(" = new ");
-        writer.Write(prop.NestedTypeFullyQualifiedName);
+        // Static member access on `Foo?` isn't valid; strip nullable annotation.
+        writer.Write(StripNullableAnnotation(prop.NestedTypeFullyQualifiedName!));
         writer.Write(".Validator().Validate(name, ");
         writer.Write(pathVar);
         writer.Write(", ");
@@ -984,20 +985,41 @@ internal static class SourceEmitter
     /// Emits binding code for a collection whose element type is itself
     /// <c>[ConfigSection]</c>-annotated. Each child section is passed to the
     /// element type's generated <c>(IConfigurationSection)</c> constructor.
+    /// <para>
+    /// The container type (<c>List&lt;T&gt;</c>) uses the user-declared element
+    /// type including any <c>?</c> annotation, so the assignment to
+    /// <c>List&lt;T?&gt;</c> properties type-checks under strict nullable. The
+    /// constructor call itself must drop the <c>?</c> because <c>new Foo?(x)</c>
+    /// is not valid C# — <c>?</c> is a type-position-only annotation.
+    /// </para>
     /// </summary>
     private static void EmitNestedCollectionAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
     {
-        var elementTypeName = prop.NestedTypeFullyQualifiedName!;
+        var containerElementType = prop.NestedTypeFullyQualifiedName!;
+        var constructableElementType = StripNullableAnnotation(containerElementType);
 
-        EmitCollectionAssignmentCore(writer, prop, elementTypeName, (childVar, listVar) =>
+        EmitCollectionAssignmentCore(writer, prop, containerElementType, (childVar, listVar) =>
         {
             writer.Write(listVar);
             writer.Write(".Add(new ");
-            writer.Write(elementTypeName);
+            writer.Write(constructableElementType);
             writer.Write('(');
             writer.Write(childVar);
             writer.WriteLine("));");
         });
+    }
+
+    /// <summary>
+    /// Drops a trailing <c>?</c> nullable annotation from a fully qualified
+    /// type name. Used wherever the FQN appears in a position where the
+    /// annotation is syntactically invalid (constructor invocation, static
+    /// member access).
+    /// </summary>
+    private static string StripNullableAnnotation(string fullyQualifiedName)
+    {
+        return fullyQualifiedName.Length > 0 && fullyQualifiedName[fullyQualifiedName.Length - 1] == '?'
+            ? fullyQualifiedName.Substring(0, fullyQualifiedName.Length - 1)
+            : fullyQualifiedName;
     }
 
     /// <summary>

@@ -757,9 +757,16 @@ internal static class ModelBuilder
     /// annotated with <c>[ConfigSection]</c>, and reports its fully qualified
     /// name. Used to classify collections whose element type is itself a
     /// nested config (<c>List&lt;EndpointConfig&gt;</c>, <c>EndpointConfig[]</c>,
-    /// etc.). Nullable reference annotations on the element (e.g. <c>List&lt;T?&gt;</c>)
-    /// are silently ignored — the generated element constructor always returns
-    /// a non-null instance.
+    /// etc.).
+    /// <para>
+    /// The reported FQN <em>preserves</em> nullable reference annotations
+    /// (<c>T?</c>) so the emitted internal container (e.g. <c>List&lt;T?&gt;</c>)
+    /// matches the user's declared property type. Without this, assigning a
+    /// <c>List&lt;T&gt;</c> to a <c>List&lt;T?&gt;</c> property would fail type-check
+    /// under strict covariance. Semantically the binder still never produces
+    /// null elements; the annotation is preserved for the type system, not
+    /// because nulls are expected.
+    /// </para>
     /// </summary>
     private static bool TryClassifyNestedElement(ITypeSymbol elementType, out string? fullyQualifiedName)
     {
@@ -767,7 +774,14 @@ internal static class ModelBuilder
             named.TypeKind == TypeKind.Class &&
             HasConfigSectionAttribute(named))
         {
-            fullyQualifiedName = named.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+            // IncludeNullableReferenceTypeModifier preserves the `?` that the
+            // user wrote on the element (e.g. List<EndpointConfig?> keeps the
+            // `?` in the FQN). FullyQualifiedFormat alone drops it.
+            fullyQualifiedName = named.ToDisplayString(
+                SymbolDisplayFormat.FullyQualifiedFormat
+                    .WithMiscellaneousOptions(
+                        SymbolDisplayFormat.FullyQualifiedFormat.MiscellaneousOptions
+                        | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier));
             return true;
         }
 
