@@ -203,14 +203,24 @@ internal static class SourceEmitter
         // ── Nested config validation: recursively invoke the inner type's
         //    generated Validator so its required-field checks, DataAnnotations,
         //    and custom hooks all run as part of the parent's validation pass.
+        //    For collection-of-nested-config, every element is validated and
+        //    its failures merged into the parent's result.
         foreach (var prop in model.Properties)
         {
-            if (prop.Binding != BindingStrategy.NestedConfig || prop.NestedTypeFullyQualifiedName is null)
+            if (prop.NestedTypeFullyQualifiedName is null)
             {
                 continue;
             }
 
-            WriteNestedValidation(writer, prop);
+            switch (prop.Binding)
+            {
+                case BindingStrategy.NestedConfig:
+                    WriteNestedValidation(writer, prop);
+                    break;
+                case BindingStrategy.NestedConfigCollection:
+                    WriteNestedCollectionValidation(writer, prop);
+                    break;
+            }
         }
 
         // ── Custom validation hook: call the partial method on the options
@@ -823,6 +833,97 @@ internal static class SourceEmitter
         writer.Write("failures.AddRange(");
         writer.Write(resultVar);
         writer.WriteLine(".Failures);");
+        writer.Indent--;
+        writer.WriteLine("}");
+
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Emits validation recursion over every element of a
+    /// <see cref="BindingStrategy.NestedConfigCollection"/> property. Each
+    /// non-null element is validated via its own generated
+    /// <c>Validator</c>, and failures are merged into the parent's
+    /// <c>failures</c> list. The index is appended to the IOptions named-options
+    /// key so a failing element is attributable (<c>SomeName:Endpoints:0</c>);
+    /// the element's own failure messages already carry the child's
+    /// <c>[SectionName:Prop]</c> prefix.
+    /// </summary>
+    private static void WriteNestedCollectionValidation(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var indexVar = LocalName(prop.Name, "Idx");
+        var itemVar = LocalName(prop.Name, "Item");
+        var resultVar = LocalName(prop.Name, "ItemResult");
+        var nameVar = LocalName(prop.Name, "ItemName");
+
+        writer.Write("if (options.");
+        writer.Write(prop.Name);
+        writer.WriteLine(" is not null)");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        writer.Write("int ");
+        writer.Write(indexVar);
+        writer.WriteLine(" = 0;");
+
+        writer.Write("foreach (var ");
+        writer.Write(itemVar);
+        writer.Write(" in options.");
+        writer.Write(prop.Name);
+        writer.WriteLine(")");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        writer.Write("if (");
+        writer.Write(itemVar);
+        writer.WriteLine(" is not null)");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        // Build the named-options key as either "<Prop>:<idx>" (when the
+        // caller passed null/default) or "<name>:<Prop>:<idx>". The index
+        // lets a consumer attribute a failure to a specific element when the
+        // same options type is registered under multiple names.
+        writer.Write("var ");
+        writer.Write(nameVar);
+        writer.Write(" = name is null ? \"");
+        writer.Write(prop.Name);
+        writer.Write(":\" + ");
+        writer.Write(indexVar);
+        writer.Write(".ToString(global::System.Globalization.CultureInfo.InvariantCulture) : name + \":");
+        writer.Write(prop.Name);
+        writer.Write(":\" + ");
+        writer.Write(indexVar);
+        writer.WriteLine(".ToString(global::System.Globalization.CultureInfo.InvariantCulture);");
+
+        writer.Write("var ");
+        writer.Write(resultVar);
+        writer.Write(" = new ");
+        writer.Write(prop.NestedTypeFullyQualifiedName);
+        writer.Write(".Validator().Validate(");
+        writer.Write(nameVar);
+        writer.Write(", ");
+        writer.Write(itemVar);
+        writer.WriteLine(");");
+
+        writer.Write("if (");
+        writer.Write(resultVar);
+        writer.WriteLine(".Failed)");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.AddRange(");
+        writer.Write(resultVar);
+        writer.WriteLine(".Failures);");
+        writer.Indent--;
+        writer.WriteLine("}");
+
+        writer.Indent--;
+        writer.WriteLine("}");
+
+        writer.Write(indexVar);
+        writer.WriteLine("++;");
+
         writer.Indent--;
         writer.WriteLine("}");
 
