@@ -233,6 +233,9 @@ internal static class SourceEmitter
                 case BindingStrategy.NestedConfigCollection:
                     WriteNestedCollectionValidation(writer, prop);
                     break;
+                case BindingStrategy.NestedConfigDictionary:
+                    WriteNestedDictionaryValidation(writer, prop);
+                    break;
             }
         }
 
@@ -579,6 +582,10 @@ internal static class SourceEmitter
 
             case BindingStrategy.NestedConfigCollection:
                 EmitNestedCollectionAssignment(writer, prop);
+                return;
+
+            case BindingStrategy.NestedConfigDictionary:
+                EmitNestedDictionaryAssignment(writer, prop);
                 return;
         }
     }
@@ -961,6 +968,84 @@ internal static class SourceEmitter
         writer.WriteLine("}");
     }
 
+    /// <summary>
+    /// Emits validation recursion over every entry of a
+    /// <see cref="BindingStrategy.NestedConfigDictionary"/> property. Each
+    /// non-null value is validated via its own generated <c>Validator</c>'s
+    /// path-aware overload, receiving the full config path
+    /// (<c>path + ":" + PropName + ":" + kvp.Key</c>, e.g. <c>"Api:Tenants:acme"</c>).
+    /// Failures are merged into the parent's list with the key baked into
+    /// every message so a failing entry is attributable by its key.
+    /// </summary>
+    private static void WriteNestedDictionaryValidation(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var kvpVar = LocalName(prop.Name, "Kvp");
+        var resultVar = LocalName(prop.Name, "KvpResult");
+        var pathVar = LocalName(prop.Name, "KvpPath");
+
+        writer.Write("if (options.");
+        writer.Write(prop.Name);
+        writer.WriteLine(" is not null)");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        writer.Write("foreach (var ");
+        writer.Write(kvpVar);
+        writer.Write(" in options.");
+        writer.Write(prop.Name);
+        writer.WriteLine(")");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        writer.Write("if (");
+        writer.Write(kvpVar);
+        writer.WriteLine(".Value is not null)");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        // Build the config path for this entry: path + ":" + PropName + ":" + key.
+        // Dictionary keys are always strings (IConfiguration only models string
+        // keys), so no ToString conversion is needed.
+        writer.Write("var ");
+        writer.Write(pathVar);
+        writer.Write(" = path + \":");
+        writer.Write(prop.Name);
+        writer.Write(":\" + ");
+        writer.Write(kvpVar);
+        writer.WriteLine(".Key;");
+
+        writer.Write("var ");
+        writer.Write(resultVar);
+        writer.Write(" = new ");
+        // Static member access on `Foo?` isn't valid; strip nullable annotation.
+        writer.Write(StripNullableAnnotation(prop.NestedTypeFullyQualifiedName!));
+        writer.Write(".Validator().Validate(name, ");
+        writer.Write(pathVar);
+        writer.Write(", ");
+        writer.Write(kvpVar);
+        writer.WriteLine(".Value);");
+
+        writer.Write("if (");
+        writer.Write(resultVar);
+        writer.WriteLine(".Failed)");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.AddRange(");
+        writer.Write(resultVar);
+        writer.WriteLine(".Failures);");
+        writer.Indent--;
+        writer.WriteLine("}");
+
+        writer.Indent--;
+        writer.WriteLine("}");
+
+        writer.Indent--;
+        writer.WriteLine("}");
+
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Collection binding emission
     // ─────────────────────────────────────────────────────────────────────
@@ -1020,6 +1105,38 @@ internal static class SourceEmitter
         return fullyQualifiedName.Length > 0 && fullyQualifiedName[fullyQualifiedName.Length - 1] == '?'
             ? fullyQualifiedName.Substring(0, fullyQualifiedName.Length - 1)
             : fullyQualifiedName;
+    }
+
+    /// <summary>
+    /// Emits binding code for a dictionary whose value type is itself
+    /// <c>[ConfigSection]</c>-annotated. Each child section becomes one entry:
+    /// <c>dict[child.Key] = new T(child);</c>. The dictionary key comes from
+    /// <c>IConfigurationSection.Key</c> verbatim — IConfiguration only models
+    /// string keys, so we don't need a per-key parse step.
+    /// <para>
+    /// The container type (<c>Dictionary&lt;string, T&gt;</c>) preserves the
+    /// user-declared element type including any <c>?</c> annotation, so the
+    /// assignment to <c>Dictionary&lt;string, T?&gt;</c> properties type-checks
+    /// under strict nullable. The constructor call itself strips the <c>?</c>
+    /// (<c>new Foo?(x)</c> isn't valid C#).
+    /// </para>
+    /// </summary>
+    private static void EmitNestedDictionaryAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var containerValueType = prop.NestedTypeFullyQualifiedName!;
+        var constructableValueType = StripNullableAnnotation(containerValueType);
+
+        EmitDictionaryAssignmentCore(writer, prop, containerValueType, (childVar, dictVar) =>
+        {
+            writer.Write(dictVar);
+            writer.Write("[");
+            writer.Write(childVar);
+            writer.Write(".Key] = new ");
+            writer.Write(constructableValueType);
+            writer.Write('(');
+            writer.Write(childVar);
+            writer.WriteLine(");");
+        });
     }
 
     /// <summary>
@@ -1085,15 +1202,23 @@ internal static class SourceEmitter
     }
 
     /// <summary>
-    /// Emits binding code for <c>Dictionary&lt;string, T&gt;</c> and its interfaces.
+    /// Shared skeleton for every dictionary-binding strategy: open the target
+    /// section, allocate a temporary <see cref="System.Collections.Generic.Dictionary{TKey, TValue}"/>
+    /// keyed by <c>string</c>, iterate <c>GetChildren()</c>, and assign the
+    /// result — preserving user-declared defaults when the section is absent.
+    /// Callers supply <paramref name="emitPerChild"/> to produce the
+    /// per-child body (scalar parse + keyed assign, or complex constructor
+    /// invocation).
     /// </summary>
-    private static void EmitDictionaryAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    private static void EmitDictionaryAssignmentCore(
+        IndentedTextWriter writer,
+        ConfigPropertyModel prop,
+        string valueTypeName,
+        System.Action<string, string> emitPerChild)
     {
         var sectionVar = LocalName(prop.Name, "Section");
         var dictVar = LocalName(prop.Name, "Dict");
         var childVar = LocalName(prop.Name, "Child");
-        var elementKeyword = prop.CollectionElementKeyword ?? "string";
-        var valueTypeName = GetElementTypeName(prop.CollectionElementStrategy, elementKeyword);
 
         writer.Write("var ");
         writer.Write(sectionVar);
@@ -1115,11 +1240,13 @@ internal static class SourceEmitter
         writer.WriteLine("{");
         writer.Indent++;
 
-        EmitDictElementParse(writer, prop.CollectionElementStrategy, elementKeyword, childVar, dictVar);
+        emitPerChild(childVar, dictVar);
 
         writer.Indent--;
         writer.WriteLine("}");
 
+        // Preserve user-declared defaults when the section is absent — matches
+        // the list-collection contract.
         writer.Write("if (");
         writer.Write(dictVar);
         writer.WriteLine(".Count > 0)");
@@ -1132,6 +1259,19 @@ internal static class SourceEmitter
         writer.WriteLine(";");
         writer.Indent--;
         writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Emits binding code for <c>Dictionary&lt;string, T&gt;</c> and its interfaces
+    /// where <c>T</c> is a scalar.
+    /// </summary>
+    private static void EmitDictionaryAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var elementKeyword = prop.CollectionElementKeyword ?? "string";
+        var valueTypeName = GetElementTypeName(prop.CollectionElementStrategy, elementKeyword);
+
+        EmitDictionaryAssignmentCore(writer, prop, valueTypeName, (childVar, dictVar) =>
+            EmitDictElementParse(writer, prop.CollectionElementStrategy, elementKeyword, childVar, dictVar));
     }
 
     /// <summary>
@@ -1526,7 +1666,7 @@ internal static class SourceEmitter
     /// <summary>Returns "Length" for strings/arrays, "Count" for list/dictionary collections.</summary>
     private static string SizeProperty(ConfigPropertyModel prop) =>
         prop.Binding is BindingStrategy.Array or BindingStrategy.NestedConfigCollection && !prop.IsCollectionArray ? "Count" :
-        prop.Binding is BindingStrategy.Dictionary ? "Count" : "Length";
+        prop.Binding is BindingStrategy.Dictionary or BindingStrategy.NestedConfigDictionary ? "Count" : "Length";
 
     /// <summary>
     /// Emits a <c>failures.Add(...)</c> line using either the user's custom

@@ -849,6 +849,179 @@ public sealed class BindingTests
     }
 
     [Fact]
+    public void NestedConfig_dictionary_binds_from_in_memory_configuration()
+    {
+        // Dictionary<string, TenantConfig> where TenantConfig is itself
+        // [ConfigSection]-annotated. Each child section under "Api:Tenants:{key}"
+        // becomes dict[key] = new TenantConfig(child).
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public Dictionary<string, TenantConfig> Tenants { get; init; } = new();
+            }
+
+            [ConfigSection("__tenant__")]
+            public partial record TenantConfig
+            {
+                public string BaseUrl { get; init; } = default!;
+                public System.TimeSpan Timeout { get; init; }
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "ApiConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Api:Tenants:acme:BaseUrl"] = "https://acme.example/",
+                ["Api:Tenants:acme:Timeout"] = "00:00:30",
+                ["Api:Tenants:globex:BaseUrl"] = "https://globex.example/",
+                ["Api:Tenants:globex:Timeout"] = "00:00:10",
+            });
+
+        var tenants = GetProp(bound, "Tenants")!;
+        var count = (int)tenants.GetType().GetProperty("Count")!.GetValue(tenants)!;
+        Assert.Equal(2, count);
+
+        // Access entries via the indexer to confirm keyed round-trip.
+        var indexer = tenants.GetType().GetProperty("Item")!;
+        var acme = indexer.GetValue(tenants, new object[] { "acme" })!;
+        var globex = indexer.GetValue(tenants, new object[] { "globex" })!;
+
+        Assert.Equal("https://acme.example/", GetProp(acme, "BaseUrl"));
+        Assert.Equal(System.TimeSpan.FromSeconds(30), GetProp(acme, "Timeout"));
+        Assert.Equal("https://globex.example/", GetProp(globex, "BaseUrl"));
+        Assert.Equal(System.TimeSpan.FromSeconds(10), GetProp(globex, "Timeout"));
+    }
+
+    [Fact]
+    public void NestedConfig_dictionary_absent_section_preserves_default()
+    {
+        // No "Api:Tenants" keys → the generator must leave the user's
+        // new() default (an empty dictionary) untouched.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public Dictionary<string, TenantConfig> Tenants { get; init; } = new();
+            }
+
+            [ConfigSection("__tenant__")]
+            public partial record TenantConfig
+            {
+                public string BaseUrl { get; init; } = default!;
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "ApiConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Api:OtherKey"] = "noise",
+            });
+
+        var tenants = GetProp(bound, "Tenants")!;
+        var count = (int)tenants.GetType().GetProperty("Count")!.GetValue(tenants)!;
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
+    public void NestedConfig_dictionary_failure_message_includes_key_in_path()
+    {
+        // Inner [Range] failure on the "acme" entry must produce a failure
+        // keyed by "[Api:Tenants:acme:Port]", NOT "[__tenant__:Port]".
+        // This proves the path-aware Validator threads the config key
+        // through dictionary-of-nested recursion.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public Dictionary<string, TenantConfig> Tenants { get; init; } = new();
+            }
+
+            [ConfigSection("__tenant__")]
+            public partial record TenantConfig
+            {
+                [Range(1, 65535)]
+                public int Port { get; init; }
+            }
+            """;
+
+        var ex = Assert.ThrowsAny<System.Exception>(() =>
+            GeneratorHarness.CompileAndBind(
+                Source,
+                "ApiConfig",
+                new System.Collections.Generic.Dictionary<string, string?>
+                {
+                    ["Api:Tenants:acme:Port"] = "999999",
+                    ["Api:Tenants:globex:Port"] = "8080",
+                }));
+
+        var message = ex.InnerException?.Message ?? ex.Message;
+        Assert.Contains("[Api:Tenants:acme:Port]", message);
+        Assert.DoesNotContain("__tenant__", message);
+    }
+
+    [Fact]
+    public void NestedConfig_dictionary_with_nullable_value_round_trips()
+    {
+        // Dictionary<string, TenantConfig?> must bind and validate identically
+        // to Dictionary<string, TenantConfig> — the binder never produces null
+        // values, and the container type matches the user's declaration so
+        // the assignment type-checks under strict nullable.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            #nullable enable
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public Dictionary<string, TenantConfig?> Tenants { get; init; } = new();
+            }
+
+            [ConfigSection("__tenant__")]
+            public partial record TenantConfig
+            {
+                public string BaseUrl { get; init; } = default!;
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "ApiConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Api:Tenants:acme:BaseUrl"] = "https://acme.example/",
+            });
+
+        var tenants = GetProp(bound, "Tenants")!;
+        var count = (int)tenants.GetType().GetProperty("Count")!.GetValue(tenants)!;
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
     public void NestedConfig_list_inner_validation_failures_surface()
     {
         // EndpointConfig has [Range(1, 65535)] on Port. An out-of-range value

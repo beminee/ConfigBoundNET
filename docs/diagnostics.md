@@ -127,7 +127,7 @@ public HashSet<string> Tags { get; init; } = new();  // CB0010 — HashSet unsup
 
 **Why**: The reflection-free binder only supports types it knows how to parse. See [Configuration Binding](configuration-binding.md) for the full supported type list. The property is skipped at binding time and retains its C#-declared default.
 
-Note: `List<T>` / `T[]` / `IReadOnlyList<T>` where `T` is itself a `[ConfigSection]`-annotated type is **supported** and does not trigger CB0010 — each child section is bound via the element type's generated constructor.
+Note: `List<T>` / `T[]` / `IReadOnlyList<T>` where `T` is itself a `[ConfigSection]`-annotated type is **supported** and does not trigger CB0010 — each child section is bound via the element type's generated constructor. The same applies to `Dictionary<string, T>` / `IDictionary<string, T>` / `IReadOnlyDictionary<string, T>` where `T` is `[ConfigSection]`-annotated: each child section becomes `dict[child.Key] = new T(child)`.
 
 ## Informational diagnostics
 

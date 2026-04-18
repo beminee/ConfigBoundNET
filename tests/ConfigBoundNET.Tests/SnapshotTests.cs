@@ -474,6 +474,87 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public Task NestedConfig_dictionary()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public Dictionary<string, TenantConfig> Tenants { get; init; } = new();
+            }
+
+            [ConfigSection("__tenant__")]
+            public partial record TenantConfig
+            {
+                public string BaseUrl { get; init; } = default!;
+                public System.TimeSpan Timeout { get; init; }
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
+    [Fact]
+    public Task NestedConfig_readonly_dictionary()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public IReadOnlyDictionary<string, TenantConfig> Tenants { get; init; } = new Dictionary<string, TenantConfig>();
+            }
+
+            [ConfigSection("__tenant__")]
+            public partial record TenantConfig
+            {
+                public string BaseUrl { get; init; } = default!;
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
+    [Fact]
+    public Task NestedConfig_dictionary_with_nullable_value()
+    {
+        // Pins the codegen for Dictionary<string, T?>. The container preserves
+        // the ? annotation (so assignment type-checks under strict nullable)
+        // while the constructor invocation strips it.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            #nullable enable
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public Dictionary<string, TenantConfig?> Tenants { get; init; } = new();
+            }
+
+            [ConfigSection("__tenant__")]
+            public partial record TenantConfig
+            {
+                public string BaseUrl { get; init; } = default!;
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
+    [Fact]
     public Task NestedConfig_list_with_inner_annotations()
     {
         // Inner element carries DataAnnotations. The parent's Validator.Validate

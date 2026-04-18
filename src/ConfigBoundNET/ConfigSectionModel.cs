@@ -187,6 +187,16 @@ internal enum BindingStrategy
     /// <c>T[]</c> from <c>List&lt;T&gt;</c> / interfaces.
     /// </summary>
     NestedConfigCollection,
+
+    /// <summary>
+    /// A dictionary (<c>Dictionary&lt;string, T&gt;</c>, <c>IDictionary&lt;string, T&gt;</c>,
+    /// <c>IReadOnlyDictionary&lt;string, T&gt;</c>) whose <em>value</em> type is
+    /// itself <c>[ConfigSection]</c>-annotated. The string key comes from each
+    /// child's <c>IConfigurationSection.Key</c>; the value is built via the
+    /// element type's generated <c>(IConfigurationSection)</c> constructor.
+    /// <c>NestedTypeFullyQualifiedName</c> carries the value type's FQN.
+    /// </summary>
+    NestedConfigDictionary,
 }
 
 /// <summary>
@@ -413,7 +423,7 @@ internal static class ModelBuilder
 
             // Scan for DataAnnotations attributes and convert them into
             // flat, equatable models the emitter can turn into explicit checks.
-            var isCollection = classification.Strategy is BindingStrategy.Array or BindingStrategy.Dictionary or BindingStrategy.NestedConfigCollection;
+            var isCollection = classification.Strategy is BindingStrategy.Array or BindingStrategy.Dictionary or BindingStrategy.NestedConfigCollection or BindingStrategy.NestedConfigDictionary;
             var annotations = ExtractDataAnnotations(
                 property, classification.Strategy, isString, isRequired, isCollection,
                 diagnostics, syntax);
@@ -682,6 +692,24 @@ internal static class ModelBuilder
                 // Only string keys are supported; IConfiguration child keys are always strings.
                 if (genericType.TypeArguments[0].SpecialType == SpecialType.System_String)
                 {
+                    // Complex-value dictionary takes priority over scalar
+                    // ClassifyElement: a value type that is itself
+                    // [ConfigSection]-annotated is bound via its own generated
+                    // (IConfigurationSection) constructor, not via scalar
+                    // TryParse. Without this branch the value would fall
+                    // through to Unsupported and the property would raise CB0010.
+                    if (TryClassifyNestedElement(genericType.TypeArguments[1], out var dictValueFqn))
+                    {
+                        return new BindingClassification(
+                            BindingStrategy.NestedConfigDictionary, false,
+                            NestedTypeFullyQualifiedName: dictValueFqn,
+                            EnumFullyQualifiedName: null,
+                            ParseTypeKeyword: null,
+                            CollectionElementStrategy: BindingStrategy.Unsupported,
+                            CollectionElementKeyword: null,
+                            IsCollectionArray: false);
+                    }
+
                     var elem = ClassifyElement(genericType.TypeArguments[1]);
                     if (elem.Strategy != BindingStrategy.Unsupported)
                     {
