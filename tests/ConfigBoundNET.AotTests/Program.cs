@@ -75,6 +75,15 @@ Check(failures, "Endpoints[0].Timeout", db.Endpoints[0].Timeout, TimeSpan.FromSe
 Check(failures, "Endpoints[1].Url", db.Endpoints[1].Url, "https://replica.example/");
 Check(failures, "Endpoints[1].Timeout", db.Endpoints[1].Timeout, TimeSpan.FromSeconds(20));
 
+// Dictionary-of-[ConfigSection] binding: each child section's Key becomes
+// the dictionary key, and its body is passed to EndpointConfig's generated
+// constructor. Exercises the NestedConfigDictionary strategy.
+Check(failures, "Tenants.Count", db.Tenants.Count, 2);
+Check(failures, "Tenants[acme].Url", db.Tenants["acme"].Url, "https://acme.example/");
+Check(failures, "Tenants[acme].Timeout", db.Tenants["acme"].Timeout, TimeSpan.FromSeconds(5));
+Check(failures, "Tenants[globex].Url", db.Tenants["globex"].Url, "https://globex.example/");
+Check(failures, "Tenants[globex].Timeout", db.Tenants["globex"].Timeout, TimeSpan.FromSeconds(15));
+
 // ── Report. ────────────────────────────────────────────────────────────────
 if (failures.Count == 0)
 {
@@ -184,6 +193,15 @@ namespace ConfigBoundNET.AotTests
         /// <see cref="EndpointConfig"/>'s generated constructor.
         /// </summary>
         public List<EndpointConfig> Endpoints { get; init; } = new();
+
+        /// <summary>
+        /// Dictionary of nested complex types. The classifier returns
+        /// <c>BindingStrategy.NestedConfigDictionary</c> and the emitter
+        /// iterates <c>section.GetChildren()</c>, using each child's
+        /// <c>Key</c> as the dictionary key and passing its body to
+        /// <see cref="EndpointConfig"/>'s generated constructor.
+        /// </summary>
+        public Dictionary<string, EndpointConfig> Tenants { get; init; } = new();
     }
 
     /// <summary>

@@ -141,13 +141,47 @@ JSON:
 
 `[MinLength]` and `[MaxLength]` work on these collections by checking `.Count` / `.Length`. If the `Endpoints` section is absent from config, the user-declared default (e.g. `new()`) is preserved.
 
+### Dictionaries of nested config types
+
+`Dictionary<string, T>` / `IDictionary<string, T>` / `IReadOnlyDictionary<string, T>` work when `T` is itself `[ConfigSection]`-annotated. Each child section becomes one entry: the child's `Key` maps directly to the dictionary key (IConfiguration only models string keys), and the child's body is passed to `T`'s generated constructor:
+
+```csharp
+[ConfigSection("Api")]
+public partial record ApiConfig
+{
+    public Dictionary<string, TenantConfig> Tenants { get; init; } = new();
+}
+
+[ConfigSection("__tenant__")]  // section name doesn't matter for value types
+public partial record TenantConfig
+{
+    public string BaseUrl { get; init; } = default!;
+    public TimeSpan Timeout { get; init; }
+}
+```
+
+JSON:
+```json
+{
+  "Api": {
+    "Tenants": {
+      "acme":   { "BaseUrl": "https://acme.example/",   "Timeout": "00:00:30" },
+      "globex": { "BaseUrl": "https://globex.example/", "Timeout": "00:00:10" }
+    }
+  }
+}
+```
+
+Each value is validated by its own generated `Validator` as part of the parent's validation pass. The failure path uses the config key as the segment, so a `[Range]` violation on the `acme` entry surfaces as `[Api:Tenants:acme:Port] ...`, not `[__tenant__:Port] ...`. `[MinLength]` / `[MaxLength]` on the dictionary check `.Count`.
+
+Only string keys are supported — `Dictionary<Guid, T>` and similar still produce CB0010 because IConfiguration doesn't model non-string keys.
+
 ### Unsupported collections
 
 These produce a `CB0010` warning and are skipped:
 
 - `HashSet<T>`, `SortedSet<T>` — use `List<T>` and deduplicate in a `ValidateCustom` hook
 - `Dictionary<TKey, T>` where `TKey` is not `string` — IConfiguration keys are always strings
-- `Dictionary<string, ComplexType>` where `ComplexType` is `[ConfigSection]`-annotated — tracked for a future release (use `List<ComplexType>` today)
 - Nested collections (`T[][]`, `List<List<T>>`)
 - Immutable collections (`ImmutableArray<T>`, `FrozenSet<T>`)
 

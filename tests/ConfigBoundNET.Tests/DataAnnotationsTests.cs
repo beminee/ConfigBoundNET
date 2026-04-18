@@ -280,6 +280,70 @@ public sealed class DataAnnotationsTests
         Assert.DoesNotContain(result.Diagnostics, d => d.Id == "CB0007");
     }
 
+    [Fact]
+    public void MinLength_on_nested_config_dictionary_emits_count_check()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                [MinLength(1)]
+                public Dictionary<string, TenantConfig> Tenants { get; init; } = new();
+            }
+
+            [ConfigSection("__tenant__")]
+            public partial record TenantConfig
+            {
+                public string BaseUrl { get; init; } = default!;
+            }
+            """;
+
+        var result = GeneratorHarness.Run(Source);
+        var generated = result.GetEmittedConfigSource();
+
+        // Dictionary exposes .Count, not .Length — widened SizeProperty must
+        // pick Count for NestedConfigDictionary.
+        Assert.Contains("options.Tenants.Count < 1", generated);
+        Assert.DoesNotContain(result.Diagnostics, d => d.Id == "CB0007");
+    }
+
+    [Fact]
+    public void MaxLength_on_nested_config_dictionary_emits_count_check()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                [MaxLength(3)]
+                public Dictionary<string, TenantConfig> Tenants { get; init; } = new();
+            }
+
+            [ConfigSection("__tenant__")]
+            public partial record TenantConfig
+            {
+                public string BaseUrl { get; init; } = default!;
+            }
+            """;
+
+        var result = GeneratorHarness.Run(Source);
+        var generated = result.GetEmittedConfigSource();
+
+        Assert.Contains("options.Tenants.Count > 3", generated);
+        Assert.DoesNotContain(result.Diagnostics, d => d.Id == "CB0007");
+    }
+
     // ── Diagnostic tests ─────────────────────────────────────────────────
 
     [Fact]

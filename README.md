@@ -231,10 +231,11 @@ Collections are fully supported:
 | `List<T>`, `IList<T>`, `ICollection<T>`, `IEnumerable<T>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>` | `new List<T>()` |
 | `Dictionary<string, T>`, `IDictionary<string, T>`, `IReadOnlyDictionary<string, T>` | `new Dictionary<string, T>()` |
 | `List<T>` / `T[]` / `IReadOnlyList<T>` (and other list-like shapes) where `T` is `[ConfigSection]`-annotated | iterates `GetChildren()` and calls `new T(child)` per element; each element is validated via its own generated `Validator` |
+| `Dictionary<string, T>` / `IDictionary<string, T>` / `IReadOnlyDictionary<string, T>` where `T` is `[ConfigSection]`-annotated | iterates `GetChildren()` and builds `dict[child.Key] = new T(child)`; each value is validated by the element type's `Validator`, keyed by the config key (so failures read `[Api:Tenants:acme:Prop]`) |
 
 Element types can be any scalar from the table above, or any `[ConfigSection]`-annotated type for the complex-element variant. If the config section is absent, user-declared defaults are preserved.
 
-Element nullability annotations (`List<T?>`, `T?[]`, `IReadOnlyList<T?>`) are accepted but have no effect on binding — the generator never produces null elements. The annotation is preserved in the emitted container type so the assignment type-checks under strict nullable; the validator defensively null-guards each element.
+Element nullability annotations (`List<T?>`, `T?[]`, `IReadOnlyList<T?>`, `Dictionary<string, T?>`) are accepted but have no effect on binding — the generator never produces null elements or null dictionary values. The annotation is preserved in the emitted container type so the assignment type-checks under strict nullable; the validator defensively null-guards each element.
 
 ## Unsupported collections
 
@@ -244,7 +245,6 @@ These are explicitly **out of scope** for now and will remain `Unsupported` (CB0
 |---|---|
 | `HashSet<T>`, `SortedSet<T>` | IConfiguration doesn't distinguish sets from lists; semantically the user wants deduplication, but config arrays often don't guarantee uniqueness. Low demand. Add later if requested. |
 | `Dictionary<TKey, T>` where TKey != `string` | IConfigurationSection child keys are always strings. Non-string-keyed dictionaries would require a parse step for the key itself and `IConfiguration` doesn't model that. |
-| `Dictionary<string, ComplexType>` where ComplexType is a `[ConfigSection]`-annotated record | Doable — each child would become `dict[child.Key] = new ComplexType(child)` — but needs its own key-mapping codegen and test surface. Tracked as a follow-up. |
 | `T[][]`, `List<List<T>>`, nested collections | IConfiguration's flat key model (`Section:0:0`) technically supports these, but the code generation becomes deeply nested and the use case is rare. Not worth the complexity. |
 | `ImmutableArray<T>`, `ImmutableList<T>`, `FrozenSet<T>` | Would require extra package references (`System.Collections.Immutable`) in the consumer. Support later if demanded. |
 | `Queue<T>`, `Stack<T>`, `LinkedList<T>`, `ConcurrentBag<T>` | Exotic for config. No demand. |

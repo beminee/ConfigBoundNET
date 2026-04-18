@@ -70,6 +70,8 @@ public sealed class GeneratorCacheTests
             public RetryConfig Retry { get; init; } = default!;
 
             public List<EndpointConfig> Endpoints { get; init; } = new();
+
+            public Dictionary<string, EndpointConfig> Tenants { get; init; } = new();
         }
 
         [ConfigSection("Retry")]
