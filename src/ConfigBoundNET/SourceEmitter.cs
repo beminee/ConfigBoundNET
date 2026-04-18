@@ -536,6 +536,10 @@ internal static class SourceEmitter
             case BindingStrategy.Dictionary:
                 EmitDictionaryAssignment(writer, prop);
                 return;
+
+            case BindingStrategy.NestedConfigCollection:
+                EmitNestedCollectionAssignment(writer, prop);
+                return;
         }
     }
 
@@ -832,27 +836,62 @@ internal static class SourceEmitter
 
     /// <summary>
     /// Emits binding code for array (<c>T[]</c>) and list-like (<c>List&lt;T&gt;</c>,
-    /// <c>IList&lt;T&gt;</c>, etc.) properties. Iterates
-    /// <c>section.GetSection("X").GetChildren()</c> and parses each child value
-    /// into a temporary <c>List&lt;T&gt;</c>, then assigns (with <c>.ToArray()</c>
-    /// for arrays).
+    /// <c>IList&lt;T&gt;</c>, etc.) properties whose element type is a scalar.
+    /// Iterates <c>section.GetSection("X").GetChildren()</c> and parses each child
+    /// value into a temporary <c>List&lt;T&gt;</c>, then assigns (with
+    /// <c>.ToArray()</c> for arrays).
     /// </summary>
     private static void EmitCollectionAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var elementKeyword = prop.CollectionElementKeyword ?? "string";
+        var elementTypeName = GetElementTypeName(prop.CollectionElementStrategy, elementKeyword);
+
+        EmitCollectionAssignmentCore(writer, prop, elementTypeName, (childVar, listVar) =>
+            EmitElementParse(writer, prop.CollectionElementStrategy, elementKeyword, childVar, listVar));
+    }
+
+    /// <summary>
+    /// Emits binding code for a collection whose element type is itself
+    /// <c>[ConfigSection]</c>-annotated. Each child section is passed to the
+    /// element type's generated <c>(IConfigurationSection)</c> constructor.
+    /// </summary>
+    private static void EmitNestedCollectionAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var elementTypeName = prop.NestedTypeFullyQualifiedName!;
+
+        EmitCollectionAssignmentCore(writer, prop, elementTypeName, (childVar, listVar) =>
+        {
+            writer.Write(listVar);
+            writer.Write(".Add(new ");
+            writer.Write(elementTypeName);
+            writer.Write('(');
+            writer.Write(childVar);
+            writer.WriteLine("));");
+        });
+    }
+
+    /// <summary>
+    /// Shared skeleton for every collection-binding strategy: open the target
+    /// section, allocate a temporary <see cref="System.Collections.Generic.List{T}"/>,
+    /// iterate <c>GetChildren()</c>, and assign the result — preserving
+    /// user-declared defaults when the section is absent. Callers supply
+    /// <paramref name="emitPerElement"/> to parse and append each child.
+    /// </summary>
+    private static void EmitCollectionAssignmentCore(
+        IndentedTextWriter writer,
+        ConfigPropertyModel prop,
+        string elementTypeName,
+        System.Action<string, string> emitPerElement)
     {
         var sectionVar = LocalName(prop.Name, "Section");
         var listVar = LocalName(prop.Name, "List");
         var childVar = LocalName(prop.Name, "Child");
-        var elementKeyword = prop.CollectionElementKeyword ?? "string";
 
         writer.Write("var ");
         writer.Write(sectionVar);
         writer.Write(" = section.GetSection(\"");
         writer.Write(prop.Name);
         writer.WriteLine("\");");
-
-        // Build the list type. For string elements, use string directly;
-        // for others, use the keyword (int, double, etc.) or FQN for enums/Guid/etc.
-        var elementTypeName = GetElementTypeName(prop.CollectionElementStrategy, elementKeyword);
 
         writer.Write("var ");
         writer.Write(listVar);
@@ -868,7 +907,7 @@ internal static class SourceEmitter
         writer.WriteLine("{");
         writer.Indent++;
 
-        EmitElementParse(writer, prop.CollectionElementStrategy, elementKeyword, childVar, listVar);
+        emitPerElement(childVar, listVar);
 
         writer.Indent--;
         writer.WriteLine("}");
