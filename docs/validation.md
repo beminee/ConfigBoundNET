@@ -157,7 +157,11 @@ Every string-targeted annotation check is guarded with `options.X is not null &&
 
 ## Layer 3: Custom validation hook
 
-Every annotated type gets a `partial void ValidateCustom(List<string> failures)` declaration. Implement it for cross-field rules that no single-property attribute can express:
+Every annotated type gets **two** partial method declarations you can opt into. Implement whichever fits your use case; unimplemented hooks cost nothing at runtime because the C# compiler removes the call sites.
+
+### `ValidateCustom(List<string> failures)` — simple form
+
+For cross-field rules that no single-property attribute can express:
 
 ```csharp
 [ConfigSection("Db")]
@@ -184,13 +188,48 @@ public partial record DbConfig
 }
 ```
 
-The hook runs **after** all generated checks (null/whitespace + DataAnnotations + nested validation), so you can safely read properties that have already passed their individual checks.
+### `ValidateCustom(List<string> failures, string path)` — path-aware form
 
-If you don't implement the method, the C# compiler removes the call site entirely — zero runtime cost.
+Recommended for types that may be used as **nested** or **list-element** configs, where the same type appears at different paths depending on the parent. The `path` argument receives the full runtime configuration path (e.g. `"Api:Endpoints:1"`), so your error messages stay correct regardless of where the type sits in the config tree:
+
+```csharp
+[ConfigSection("__endpoint__")]  // section name used only if registered standalone
+public partial record EndpointConfig
+{
+    public string? Host { get; init; }
+    public string? Url { get; init; }
+
+    partial void ValidateCustom(List<string> failures, string path)
+    {
+        if (Host is null && Url is null)
+            failures.Add($"[{path}] Either Host or Url must be set.");
+    }
+}
+```
+
+When `EndpointConfig` is used as `List<EndpointConfig>` under an `ApiConfig` with section name `Api`, a failing element 2 produces `[Api:Endpoints:2] Either Host or Url must be set.` — not `[__endpoint__] ...`.
+
+You can implement **either** overload, **both**, or **neither**. Both are called unconditionally; unimplemented ones vanish at compile time.
+
+The hooks run **after** all generated checks (null/whitespace + DataAnnotations + nested validation), so you can safely read properties that have already passed their individual checks.
+
+## Failure message format
+
+Every generator-emitted failure message carries a `[path:property]` prefix, where `path` is the runtime configuration path to the options instance being validated:
+
+| Scenario | Example failure |
+|---|---|
+| Root validation (`AddDbConfig(config)`) | `[Db:Conn] is required but was null...` |
+| Nested config (`DbConfig.Retry`) | `[Db:Retry:MaxAttempts] must be between 1 and 20.` |
+| Nested collection (`ApiConfig.Endpoints[1]`) | `[Api:Endpoints:1:Url] is not a valid absolute URL.` |
+
+The path threads through every layer of nesting, so message keys stay attributable regardless of how deep the problem is. Internally the generator emits a path-aware `Validate(string? name, string path, T options)` overload alongside the `IValidateOptions<T>` entry point; the public `Validate(string? name, T options)` delegates to it with `path = SectionName`, so top-level registration works unchanged.
+
+For user-supplied `ErrorMessage`, the `{0}` placeholder is resolved at **runtime** to `[path:property]` (so it follows the same path-prefix convention), while `{1}` and `{2}` substitute at generator time for numeric arguments.
 
 ## Nested validation
 
-When a property's type is another `[ConfigSection]`-annotated record, the parent's validator recursively calls the nested type's validator:
+When a property's type is another `[ConfigSection]`-annotated record, the parent's validator recursively calls the nested type's validator and threads the full path through:
 
 ```csharp
 [ConfigSection("Database")]
@@ -211,18 +250,20 @@ public partial record RetryConfig
 If `MaxAttempts` is set to `99`, the parent's validation produces:
 
 ```
-[__inner__:MaxAttempts] must be between 1 and 20.
+[Database:Retry:MaxAttempts] must be between 1 and 20.
 ```
 
-The parent's Validator instantiates `RetryConfig.Validator`, calls `.Validate()`, and merges any failures. This means all three validation layers (nullability, DataAnnotations, custom hooks) on the nested type participate in the parent's validation pass.
+Note the prefix is `Database:Retry:MaxAttempts`, not `__inner__:MaxAttempts` — the nested type's own section name is irrelevant to messages emitted during parent recursion. For collections of `[ConfigSection]` elements, the element index is spliced in too (`Database:Replicas:0:MaxAttempts`).
+
+All three validation layers (nullability, DataAnnotations, custom hooks) on the nested type participate in the parent's validation pass.
 
 ## Execution order
 
 1. **Null instance check** — `if (options is null) return Fail(...)`
 2. **Required-field checks** — non-nullable reference types
 3. **DataAnnotations checks** — `[Range]`, `[RegularExpression]`, etc.
-4. **Nested config validation** — recursive calls to inner Validators
-5. **Custom hook** — `options.ValidateCustom(failures)`
+4. **Nested config validation** — recursive calls to inner Validators (path is threaded through)
+5. **Custom hooks** — both `options.ValidateCustom(failures)` and `options.ValidateCustom(failures, path)` are called (unimplemented ones are removed at compile time)
 6. **Return** — `Fail(failures)` or `Success`
 
 All failures accumulate in a single `List<string>` so the user sees every problem at once, not one at a time.

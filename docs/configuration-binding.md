@@ -100,6 +100,14 @@ Supported dictionary types:
 
 Collection elements can be any scalar type from the supported set: `string`, all numerics, `bool`, `Guid`, `TimeSpan`, `DateTime(Offset)`, `Uri`, and enums. Collections whose element type is itself a `[ConfigSection]`-annotated record are also supported — see [Collections of nested config types](#collections-of-nested-config-types) below.
 
+### Element nullability
+
+Element nullability annotations (`List<string?>`, `EndpointConfig?[]`, `IReadOnlyList<EndpointConfig?>`) are accepted syntactically but have no effect on binding: the generator never produces null elements. For scalars, null-valued config children are simply skipped; for complex elements, each child section is passed to the element type's generated constructor, which always returns non-null.
+
+The `?` annotation is preserved in the emitted internal container (e.g. `new List<EndpointConfig?>()`) so assigning to a `List<EndpointConfig?>` property type-checks under strict-nullable. The generated validator null-guards each element defensively even though the binder's contract says no nulls can get there.
+
+If you want "may be absent" semantics for an individual complex element, the configuration already expresses that by simply omitting the child — the resulting list is shorter, not null-padded.
+
 ### Collections of nested config types
 
 `List<T>` / `T[]` / `IReadOnlyList<T>` (and the other list-like interfaces) work when `T` is itself `[ConfigSection]`-annotated. Each child section is passed to `T`'s generated `(IConfigurationSection)` constructor, and every element is validated via its own generated `Validator` as part of the parent's validation pass.

@@ -82,7 +82,7 @@ ConfigBoundNET ships as a single analyzer package. There is no runtime dependenc
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="ConfigBoundNET" Version="2.0.1" />
+  <PackageReference Include="ConfigBoundNET" Version="2.1.0" />
 </ItemGroup>
 ```
 
@@ -157,7 +157,9 @@ Misapplied annotations are caught at **build time** with dedicated diagnostics (
 
 ## Custom validation hook
 
-For cross-field rules that no single-property attribute can express, ConfigBoundNET emits a `partial void ValidateCustom` method on every annotated type. Implement it to add your own checks:
+For cross-field rules that no single-property attribute can express, ConfigBoundNET emits **two** partial `ValidateCustom` methods on every annotated type. Implement whichever fits; unimplemented hooks are removed at compile time.
+
+### Simple form
 
 ```csharp
 [ConfigSection("Db")]
@@ -177,7 +179,28 @@ public partial record DbConfig
 }
 ```
 
-The hook runs **after** all generated checks (null/whitespace + DataAnnotations), so you can safely read already-validated properties. If you don't implement it, the C# compiler removes the call site entirely — zero runtime cost.
+### Path-aware form (recommended for reusable types)
+
+When the same type may be used standalone **and** as a nested or list-element config, the second overload hands you the full runtime configuration path so your failure messages stay correctly scoped regardless of where the type sits in the tree:
+
+```csharp
+[ConfigSection("__endpoint__")]  // section name only used when registered standalone
+public partial record EndpointConfig
+{
+    public string? Host { get; init; }
+    public string? Url { get; init; }
+
+    partial void ValidateCustom(List<string> failures, string path)
+    {
+        if (Host is null && Url is null)
+            failures.Add($"[{path}] Either Host or Url must be set.");
+    }
+}
+```
+
+Used standalone: `[__endpoint__] Either Host or Url must be set.` Used as `List<EndpointConfig>` under `ApiConfig("Api")`, element 2: `[Api:Endpoints:2] Either Host or Url must be set.`
+
+Both hooks run **after** all generated checks (null/whitespace + DataAnnotations + nested validation), so you can safely read already-validated properties. Any hook you don't implement costs nothing at runtime — the C# compiler removes the call site entirely.
 
 ---
 
@@ -210,6 +233,8 @@ Collections are fully supported:
 | `List<T>` / `T[]` / `IReadOnlyList<T>` (and other list-like shapes) where `T` is `[ConfigSection]`-annotated | iterates `GetChildren()` and calls `new T(child)` per element; each element is validated via its own generated `Validator` |
 
 Element types can be any scalar from the table above, or any `[ConfigSection]`-annotated type for the complex-element variant. If the config section is absent, user-declared defaults are preserved.
+
+Element nullability annotations (`List<T?>`, `T?[]`, `IReadOnlyList<T?>`) are accepted but have no effect on binding — the generator never produces null elements. The annotation is preserved in the emitted container type so the assignment type-checks under strict nullable; the validator defensively null-guards each element.
 
 ## Unsupported collections
 
