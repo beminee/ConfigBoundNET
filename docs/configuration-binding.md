@@ -98,7 +98,40 @@ Supported dictionary types:
 
 ### Element types
 
-Collection elements can be any scalar type from the supported set: `string`, all numerics, `bool`, `Guid`, `TimeSpan`, `DateTime(Offset)`, `Uri`, and enums. Nested complex types in collections are not supported in the current version.
+Collection elements can be any scalar type from the supported set: `string`, all numerics, `bool`, `Guid`, `TimeSpan`, `DateTime(Offset)`, `Uri`, and enums. Collections whose element type is itself a `[ConfigSection]`-annotated record are also supported — see [Collections of nested config types](#collections-of-nested-config-types) below.
+
+### Collections of nested config types
+
+`List<T>` / `T[]` / `IReadOnlyList<T>` (and the other list-like interfaces) work when `T` is itself `[ConfigSection]`-annotated. Each child section is passed to `T`'s generated `(IConfigurationSection)` constructor, and every element is validated via its own generated `Validator` as part of the parent's validation pass.
+
+```csharp
+[ConfigSection("Api")]
+public partial record ApiConfig
+{
+    public List<EndpointConfig> Endpoints { get; init; } = new();
+}
+
+[ConfigSection("__endpoint__")]  // section name doesn't matter for element types
+public partial record EndpointConfig
+{
+    public string Url { get; init; } = default!;
+    public TimeSpan Timeout { get; init; }
+}
+```
+
+JSON:
+```json
+{
+  "Api": {
+    "Endpoints": [
+      { "Url": "https://primary.example/",  "Timeout": "00:00:10" },
+      { "Url": "https://replica.example/",  "Timeout": "00:00:20" }
+    ]
+  }
+}
+```
+
+`[MinLength]` and `[MaxLength]` work on these collections by checking `.Count` / `.Length`. If the `Endpoints` section is absent from config, the user-declared default (e.g. `new()`) is preserved.
 
 ### Unsupported collections
 
@@ -106,7 +139,7 @@ These produce a `CB0010` warning and are skipped:
 
 - `HashSet<T>`, `SortedSet<T>` — use `List<T>` and deduplicate in a `ValidateCustom` hook
 - `Dictionary<TKey, T>` where `TKey` is not `string` — IConfiguration keys are always strings
-- `List<ComplexType>` where ComplexType is a `[ConfigSection]` record — tracked for a future release
+- `Dictionary<string, ComplexType>` where `ComplexType` is `[ConfigSection]`-annotated — tracked for a future release (use `List<ComplexType>` today)
 - Nested collections (`T[][]`, `List<List<T>>`)
 - Immutable collections (`ImmutableArray<T>`, `FrozenSet<T>`)
 

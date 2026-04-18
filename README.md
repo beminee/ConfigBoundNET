@@ -207,8 +207,9 @@ Collections are fully supported:
 | `T[]` | `List<T>` → `.ToArray()` |
 | `List<T>`, `IList<T>`, `ICollection<T>`, `IEnumerable<T>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>` | `new List<T>()` |
 | `Dictionary<string, T>`, `IDictionary<string, T>`, `IReadOnlyDictionary<string, T>` | `new Dictionary<string, T>()` |
+| `List<T>` / `T[]` / `IReadOnlyList<T>` (and other list-like shapes) where `T` is `[ConfigSection]`-annotated | iterates `GetChildren()` and calls `new T(child)` per element; each element is validated via its own generated `Validator` |
 
-Element types can be any scalar from the table above. If the config section is absent, user-declared defaults are preserved.
+Element types can be any scalar from the table above, or any `[ConfigSection]`-annotated type for the complex-element variant. If the config section is absent, user-declared defaults are preserved.
 
 ## Unsupported collections
 
@@ -218,7 +219,7 @@ These are explicitly **out of scope** for now and will remain `Unsupported` (CB0
 |---|---|
 | `HashSet<T>`, `SortedSet<T>` | IConfiguration doesn't distinguish sets from lists; semantically the user wants deduplication, but config arrays often don't guarantee uniqueness. Low demand. Add later if requested. |
 | `Dictionary<TKey, T>` where TKey != `string` | IConfigurationSection child keys are always strings. Non-string-keyed dictionaries would require a parse step for the key itself and `IConfiguration` doesn't model that. |
-| `List<ComplexType>` where ComplexType is a `[ConfigSection]`-annotated record | Each array element would be a sub-section with its own key-value children. Doable (the child is an `IConfigurationSection` itself, and we'd call `new ComplexType(child)`), but it adds recursive complexity. **Tracked as a follow-up.** |
+| `Dictionary<string, ComplexType>` where ComplexType is a `[ConfigSection]`-annotated record | Doable — each child would become `dict[child.Key] = new ComplexType(child)` — but needs its own key-mapping codegen and test surface. Tracked as a follow-up. |
 | `T[][]`, `List<List<T>>`, nested collections | IConfiguration's flat key model (`Section:0:0`) technically supports these, but the code generation becomes deeply nested and the use case is rare. Not worth the complexity. |
 | `ImmutableArray<T>`, `ImmutableList<T>`, `FrozenSet<T>` | Would require extra package references (`System.Collections.Immutable`) in the consumer. Support later if demanded. |
 | `Queue<T>`, `Stack<T>`, `LinkedList<T>`, `ConcurrentBag<T>` | Exotic for config. No demand. |
@@ -438,7 +439,7 @@ ConfigBoundNET is at **v2.0.0** and feature-complete for its core remit: declare
 
 ### Planned
 
-- [ ] **`List<[ConfigSection]>` — complex nested collections.** Today a `List<EndpointConfig>` where `EndpointConfig` is itself `[ConfigSection]`-annotated falls under CB0010. Each array element is already an `IConfigurationSection`, so the emitter can iterate `section.GetChildren()` and call `new EndpointConfig(child)` per element. Closes the last honest gap in the binding story.
+- [x] **`List<[ConfigSection]>` — complex nested collections.** ✅ `List<T>` / `T[]` / `IReadOnlyList<T>` (and the other list-like shapes) bind via `section.GetChildren()` + `new T(child)` per element when `T` is itself `[ConfigSection]`-annotated. Each element is validated through its own generated `Validator`, and failures are merged into the parent's result with an index-tagged named-options key. `[MinLength]`/`[MaxLength]` work on these collections via `.Count` / `.Length`. `Dictionary<string, ComplexType>` remains a follow-up.
 - [ ] **JSON schema emission for `appsettings.json`.** Emit a `.schema.json` at build time from the `[ConfigSection]` graph (types, required-ness, `[Range]` bounds, enum values, regex patterns). Wired via `"$schema"` in `appsettings.json`, users get IntelliSense and red squiggles on config values — no runtime cost, enormous DX win.
 - [ ] **`[Sensitive]` attribute + redacted `ToString`.** Emit an override that prints `Conn = ***` for marked properties so `logger.LogInformation("{@Config}", opts)` stops leaking secrets. Today users either write this by hand or accept the footgun.
 - [ ] **Analyzer for stringly-typed config access.** When a `[ConfigSection("Db")]` exists, flag `configuration["Db:Conn"]` / `configuration.GetValue<T>("Db:…")` and suggest injecting `IOptions<DbConfig>` instead. Turns the generator into a migration tool for existing codebases.

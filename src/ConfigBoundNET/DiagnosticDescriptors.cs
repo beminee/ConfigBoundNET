@@ -150,5 +150,5 @@ internal static class DiagnosticDescriptors
         category: Category,
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "ConfigBoundNET emits an explicit, AOT-safe binder. Properties whose types fall outside the supported set (string, primitives, Guid, TimeSpan, DateTime(Offset), Uri, enums, and nested [ConfigSection] types) cannot be bound and are silently skipped.");
+        description: "ConfigBoundNET emits an explicit, AOT-safe binder. Properties whose types fall outside the supported set (string, primitives, Guid, TimeSpan, DateTime(Offset), Uri, enums, nested [ConfigSection] types, and collections of any of those) cannot be bound and are silently skipped.");
 }
