@@ -818,7 +818,9 @@ internal static class SourceEmitter
     /// <summary>
     /// Emits a recursive validation call for a nested <c>[ConfigSection]</c>
     /// property. Instantiates the inner type's generated <c>Validator</c>,
-    /// calls <c>Validate</c>, and merges any failures into the parent's list.
+    /// calls the path-aware <c>Validate</c> overload with the current path
+    /// extended by the property's name, and merges any failures into the
+    /// parent's list.
     /// </summary>
     private static void WriteNestedValidation(IndentedTextWriter writer, ConfigPropertyModel prop)
     {
@@ -830,11 +832,15 @@ internal static class SourceEmitter
         writer.WriteLine("{");
         writer.Indent++;
 
+        // path + ":" + <PropertyName> — e.g. "Db:Retry". The child's validator
+        // uses this string as the prefix in every failure message it emits.
         writer.Write("var ");
         writer.Write(resultVar);
         writer.Write(" = new ");
         writer.Write(prop.NestedTypeFullyQualifiedName);
-        writer.Write(".Validator().Validate(name, options.");
+        writer.Write(".Validator().Validate(name, path + \":");
+        writer.Write(prop.Name);
+        writer.Write("\", options.");
         writer.Write(prop.Name);
         writer.WriteLine(");");
 
