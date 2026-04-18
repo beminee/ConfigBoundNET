@@ -125,7 +125,24 @@ internal static class SourceEmitter
         //    regex is compiled once, not on every Validate call.
         WriteRegexFields(writer, model);
 
+        // ── IValidateOptions<T> entry point. Delegates to the path-aware
+        //    overload so root validation still reads "[SectionName:Prop]"
+        //    in failure messages, preserving backwards compatibility.
         writer.Write("public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, ");
+        writer.Write(model.TypeName);
+        writer.WriteLine(" options)");
+        writer.Indent++;
+        writer.WriteLine("=> Validate(name, SectionName, options);");
+        writer.Indent--;
+        writer.WriteLine();
+
+        // ── Path-aware overload invoked by parent validators during nested /
+        //    nested-collection recursion. `path` is the full IConfiguration
+        //    path to *this* options instance (e.g. "Api:Endpoints:1"). All
+        //    failure messages emitted below use `path` as the prefix, so the
+        //    same child type produces correctly-scoped messages regardless of
+        //    where it sits in the config tree.
+        writer.Write("public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, string path, ");
         writer.Write(model.TypeName);
         writer.WriteLine(" options)");
         writer.WriteLine("{");
@@ -161,9 +178,7 @@ internal static class SourceEmitter
                 writer.WriteLine("))");
                 writer.WriteLine("{");
                 writer.Indent++;
-                writer.Write("failures.Add(\"[");
-                writer.Write(Escape(model.SectionName));
-                writer.Write(':');
+                writer.Write("failures.Add(\"[\" + path + \":");
                 writer.Write(prop.Name);
                 writer.WriteLine("] is required but was null, empty, or whitespace.\");");
                 writer.Indent--;
@@ -176,9 +191,7 @@ internal static class SourceEmitter
                 writer.WriteLine(" is null)");
                 writer.WriteLine("{");
                 writer.Indent++;
-                writer.Write("failures.Add(\"[");
-                writer.Write(Escape(model.SectionName));
-                writer.Write(':');
+                writer.Write("failures.Add(\"[\" + path + \":");
                 writer.Write(prop.Name);
                 writer.WriteLine("] is required but was null.\");");
                 writer.Indent--;
@@ -203,24 +216,38 @@ internal static class SourceEmitter
         // ── Nested config validation: recursively invoke the inner type's
         //    generated Validator so its required-field checks, DataAnnotations,
         //    and custom hooks all run as part of the parent's validation pass.
+        //    For collection-of-nested-config, every element is validated and
+        //    its failures merged into the parent's result.
         foreach (var prop in model.Properties)
         {
-            if (prop.Binding != BindingStrategy.NestedConfig || prop.NestedTypeFullyQualifiedName is null)
+            if (prop.NestedTypeFullyQualifiedName is null)
             {
                 continue;
             }
 
-            WriteNestedValidation(writer, prop);
+            switch (prop.Binding)
+            {
+                case BindingStrategy.NestedConfig:
+                    WriteNestedValidation(writer, prop);
+                    break;
+                case BindingStrategy.NestedConfigCollection:
+                    WriteNestedCollectionValidation(writer, prop);
+                    break;
+            }
         }
 
-        // ── Custom validation hook: call the partial method on the options
-        //    instance. If the user has not implemented it, the C# compiler
-        //    removes the call site entirely (zero cost). If they have, their
-        //    code runs after all generated checks so it can inspect the
-        //    already-bound, already-null-checked state.
+        // ── Custom validation hooks. Both partial methods are called
+        //    unconditionally; the C# compiler removes the call site for any
+        //    the user didn't implement, so unimplemented hooks cost nothing
+        //    at runtime.
+        //    - The single-arg overload preserves backwards compat with hooks
+        //      written before the path-aware variant existed.
+        //    - The two-arg overload hands the user the full runtime path so
+        //      they can produce messages like "[Api:Endpoints:1] ..." that
+        //      stay correct at any nesting depth.
         writer.WriteLine();
-        writer.Write("options.ValidateCustom(failures);");
-        writer.WriteLine();
+        writer.WriteLine("options.ValidateCustom(failures);");
+        writer.WriteLine("options.ValidateCustom(failures, path);");
 
         writer.WriteLine();
         writer.WriteLine("return failures.Count > 0");
@@ -235,9 +262,10 @@ internal static class SourceEmitter
         writer.Indent--;
         writer.WriteLine("}");
 
-        // ── Partial method declaration for the custom validation hook.
-        //    Lives on the outer partial type (not on the sealed Validator)
-        //    so the user can implement it in their own partial declaration.
+        // ── Partial method declarations for the custom validation hooks.
+        //    Live on the outer partial type (not on the sealed Validator) so
+        //    the user can implement either (or both) in their own partial
+        //    declaration.
         writer.WriteLine();
         writer.WriteLine("/// <summary>");
         writer.WriteLine("/// Optional hook for custom cross-field validation. Implement this");
@@ -247,6 +275,18 @@ internal static class SourceEmitter
         writer.WriteLine("/// </summary>");
         writer.WriteLine("/// <param name=\"failures\">Mutable list of failure messages. Add to it to report errors.</param>");
         writer.WriteLine("partial void ValidateCustom(global::System.Collections.Generic.List<string> failures);");
+
+        writer.WriteLine();
+        writer.WriteLine("/// <summary>");
+        writer.WriteLine("/// Path-aware overload of the custom validation hook. Implement this");
+        writer.WriteLine("/// partial method instead of (or alongside) the single-argument form");
+        writer.WriteLine("/// when you want to include the full runtime configuration path in");
+        writer.WriteLine("/// your failure messages — useful for types that can be used as");
+        writer.WriteLine("/// nested or element configs, where the path differs per usage site.");
+        writer.WriteLine("/// </summary>");
+        writer.WriteLine("/// <param name=\"failures\">Mutable list of failure messages. Add to it to report errors.</param>");
+        writer.WriteLine("/// <param name=\"path\">Full configuration path to this options instance, e.g. <c>\"Api:Endpoints:1\"</c>.</param>");
+        writer.WriteLine("partial void ValidateCustom(global::System.Collections.Generic.List<string> failures, string path);");
 
         writer.Indent--;
         writer.WriteLine("}");
@@ -536,6 +576,10 @@ internal static class SourceEmitter
             case BindingStrategy.Dictionary:
                 EmitDictionaryAssignment(writer, prop);
                 return;
+
+            case BindingStrategy.NestedConfigCollection:
+                EmitNestedCollectionAssignment(writer, prop);
+                return;
         }
     }
 
@@ -791,7 +835,9 @@ internal static class SourceEmitter
     /// <summary>
     /// Emits a recursive validation call for a nested <c>[ConfigSection]</c>
     /// property. Instantiates the inner type's generated <c>Validator</c>,
-    /// calls <c>Validate</c>, and merges any failures into the parent's list.
+    /// calls the path-aware <c>Validate</c> overload with the current path
+    /// extended by the property's name, and merges any failures into the
+    /// parent's list.
     /// </summary>
     private static void WriteNestedValidation(IndentedTextWriter writer, ConfigPropertyModel prop)
     {
@@ -803,11 +849,15 @@ internal static class SourceEmitter
         writer.WriteLine("{");
         writer.Indent++;
 
+        // path + ":" + <PropertyName> — e.g. "Db:Retry". The child's validator
+        // uses this string as the prefix in every failure message it emits.
         writer.Write("var ");
         writer.Write(resultVar);
         writer.Write(" = new ");
         writer.Write(prop.NestedTypeFullyQualifiedName);
-        writer.Write(".Validator().Validate(name, options.");
+        writer.Write(".Validator().Validate(name, path + \":");
+        writer.Write(prop.Name);
+        writer.Write("\", options.");
         writer.Write(prop.Name);
         writer.WriteLine(");");
 
@@ -826,33 +876,174 @@ internal static class SourceEmitter
         writer.WriteLine("}");
     }
 
+    /// <summary>
+    /// Emits validation recursion over every element of a
+    /// <see cref="BindingStrategy.NestedConfigCollection"/> property. Each
+    /// non-null element is validated via its own generated <c>Validator</c>'s
+    /// path-aware overload, receiving the full config path (<c>path + ":" +
+    /// PropName + ":" + idx</c>, e.g. <c>"Api:Endpoints:1"</c>). Failures are
+    /// merged into the parent's list with the element's index baked into
+    /// every message — no more <c>[__endpoint__:Url]</c>.
+    /// </summary>
+    private static void WriteNestedCollectionValidation(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var indexVar = LocalName(prop.Name, "Idx");
+        var itemVar = LocalName(prop.Name, "Item");
+        var resultVar = LocalName(prop.Name, "ItemResult");
+        var pathVar = LocalName(prop.Name, "ItemPath");
+
+        writer.Write("if (options.");
+        writer.Write(prop.Name);
+        writer.WriteLine(" is not null)");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        writer.Write("int ");
+        writer.Write(indexVar);
+        writer.WriteLine(" = 0;");
+
+        writer.Write("foreach (var ");
+        writer.Write(itemVar);
+        writer.Write(" in options.");
+        writer.Write(prop.Name);
+        writer.WriteLine(")");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        writer.Write("if (");
+        writer.Write(itemVar);
+        writer.WriteLine(" is not null)");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        // Build the config path for this element: path + ":" + PropName + ":" + idx.
+        // e.g. parent path "Api" + prop "Endpoints" + idx 1 -> "Api:Endpoints:1".
+        writer.Write("var ");
+        writer.Write(pathVar);
+        writer.Write(" = path + \":");
+        writer.Write(prop.Name);
+        writer.Write(":\" + ");
+        writer.Write(indexVar);
+        writer.WriteLine(".ToString(global::System.Globalization.CultureInfo.InvariantCulture);");
+
+        writer.Write("var ");
+        writer.Write(resultVar);
+        writer.Write(" = new ");
+        // Static member access on `Foo?` isn't valid; strip nullable annotation.
+        writer.Write(StripNullableAnnotation(prop.NestedTypeFullyQualifiedName!));
+        writer.Write(".Validator().Validate(name, ");
+        writer.Write(pathVar);
+        writer.Write(", ");
+        writer.Write(itemVar);
+        writer.WriteLine(");");
+
+        writer.Write("if (");
+        writer.Write(resultVar);
+        writer.WriteLine(".Failed)");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("failures.AddRange(");
+        writer.Write(resultVar);
+        writer.WriteLine(".Failures);");
+        writer.Indent--;
+        writer.WriteLine("}");
+
+        writer.Indent--;
+        writer.WriteLine("}");
+
+        writer.Write(indexVar);
+        writer.WriteLine("++;");
+
+        writer.Indent--;
+        writer.WriteLine("}");
+
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Collection binding emission
     // ─────────────────────────────────────────────────────────────────────
 
     /// <summary>
     /// Emits binding code for array (<c>T[]</c>) and list-like (<c>List&lt;T&gt;</c>,
-    /// <c>IList&lt;T&gt;</c>, etc.) properties. Iterates
-    /// <c>section.GetSection("X").GetChildren()</c> and parses each child value
-    /// into a temporary <c>List&lt;T&gt;</c>, then assigns (with <c>.ToArray()</c>
-    /// for arrays).
+    /// <c>IList&lt;T&gt;</c>, etc.) properties whose element type is a scalar.
+    /// Iterates <c>section.GetSection("X").GetChildren()</c> and parses each child
+    /// value into a temporary <c>List&lt;T&gt;</c>, then assigns (with
+    /// <c>.ToArray()</c> for arrays).
     /// </summary>
     private static void EmitCollectionAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var elementKeyword = prop.CollectionElementKeyword ?? "string";
+        var elementTypeName = GetElementTypeName(prop.CollectionElementStrategy, elementKeyword);
+
+        EmitCollectionAssignmentCore(writer, prop, elementTypeName, (childVar, listVar) =>
+            EmitElementParse(writer, prop.CollectionElementStrategy, elementKeyword, childVar, listVar));
+    }
+
+    /// <summary>
+    /// Emits binding code for a collection whose element type is itself
+    /// <c>[ConfigSection]</c>-annotated. Each child section is passed to the
+    /// element type's generated <c>(IConfigurationSection)</c> constructor.
+    /// <para>
+    /// The container type (<c>List&lt;T&gt;</c>) uses the user-declared element
+    /// type including any <c>?</c> annotation, so the assignment to
+    /// <c>List&lt;T?&gt;</c> properties type-checks under strict nullable. The
+    /// constructor call itself must drop the <c>?</c> because <c>new Foo?(x)</c>
+    /// is not valid C# — <c>?</c> is a type-position-only annotation.
+    /// </para>
+    /// </summary>
+    private static void EmitNestedCollectionAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var containerElementType = prop.NestedTypeFullyQualifiedName!;
+        var constructableElementType = StripNullableAnnotation(containerElementType);
+
+        EmitCollectionAssignmentCore(writer, prop, containerElementType, (childVar, listVar) =>
+        {
+            writer.Write(listVar);
+            writer.Write(".Add(new ");
+            writer.Write(constructableElementType);
+            writer.Write('(');
+            writer.Write(childVar);
+            writer.WriteLine("));");
+        });
+    }
+
+    /// <summary>
+    /// Drops a trailing <c>?</c> nullable annotation from a fully qualified
+    /// type name. Used wherever the FQN appears in a position where the
+    /// annotation is syntactically invalid (constructor invocation, static
+    /// member access).
+    /// </summary>
+    private static string StripNullableAnnotation(string fullyQualifiedName)
+    {
+        return fullyQualifiedName.Length > 0 && fullyQualifiedName[fullyQualifiedName.Length - 1] == '?'
+            ? fullyQualifiedName.Substring(0, fullyQualifiedName.Length - 1)
+            : fullyQualifiedName;
+    }
+
+    /// <summary>
+    /// Shared skeleton for every collection-binding strategy: open the target
+    /// section, allocate a temporary <see cref="System.Collections.Generic.List{T}"/>,
+    /// iterate <c>GetChildren()</c>, and assign the result — preserving
+    /// user-declared defaults when the section is absent. Callers supply
+    /// <paramref name="emitPerElement"/> to parse and append each child.
+    /// </summary>
+    private static void EmitCollectionAssignmentCore(
+        IndentedTextWriter writer,
+        ConfigPropertyModel prop,
+        string elementTypeName,
+        System.Action<string, string> emitPerElement)
     {
         var sectionVar = LocalName(prop.Name, "Section");
         var listVar = LocalName(prop.Name, "List");
         var childVar = LocalName(prop.Name, "Child");
-        var elementKeyword = prop.CollectionElementKeyword ?? "string";
 
         writer.Write("var ");
         writer.Write(sectionVar);
         writer.Write(" = section.GetSection(\"");
         writer.Write(prop.Name);
         writer.WriteLine("\");");
-
-        // Build the list type. For string elements, use string directly;
-        // for others, use the keyword (int, double, etc.) or FQN for enums/Guid/etc.
-        var elementTypeName = GetElementTypeName(prop.CollectionElementStrategy, elementKeyword);
 
         writer.Write("var ");
         writer.Write(listVar);
@@ -868,7 +1059,7 @@ internal static class SourceEmitter
         writer.WriteLine("{");
         writer.Indent++;
 
-        EmitElementParse(writer, prop.CollectionElementStrategy, elementKeyword, childVar, listVar);
+        emitPerElement(childVar, listVar);
 
         writer.Indent--;
         writer.WriteLine("}");
@@ -1167,6 +1358,13 @@ internal static class SourceEmitter
     private const string EmailRegexPattern = @"^[^@\s]+@[^@\s]+\.[^@\s]+$";
 
     /// <summary>
+    /// Separator array reused by <see cref="EmitFailureMessage"/>'s split on
+    /// <c>{0}</c>. Cached as a static field so we don't re-allocate on every
+    /// annotation (CA1861).
+    /// </summary>
+    private static readonly string[] FailureMessageSplitSeparator = { "{0}" };
+
+    /// <summary>
     /// Emits precompiled <c>private static readonly Regex</c> fields inside
     /// the Validator class for every <see cref="DataAnnotationKind.RegularExpression"/>
     /// and <see cref="DataAnnotationKind.EmailAddress"/> annotation.
@@ -1274,9 +1472,7 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
+        writer.Write("failures.Add(\"[\" + path + \":");
         writer.Write(prop.Name);
         writer.WriteLine("] is required but was null, empty, or whitespace.\");");
         writer.Indent--;
@@ -1291,9 +1487,7 @@ internal static class SourceEmitter
         writer.WriteLine(" is null)");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
+        writer.Write("failures.Add(\"[\" + path + \":");
         writer.Write(prop.Name);
         writer.WriteLine("] is required but was null.\");");
         writer.Indent--;
@@ -1322,57 +1516,106 @@ internal static class SourceEmitter
         writer.WriteLine(")");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMsg = $"[{model.SectionName}:{prop.Name}] must be between {min} and {max}.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMsg, arg1: min, arg2: max);
+        // {0} is substituted at runtime to "[" + path + ":Prop]".
+        // {1} and {2} are substituted at generator time to min / max literals.
+        EmitFailureMessage(writer, prop, ann, "{0} must be between {1} and {2}.", arg1: min, arg2: max);
         writer.Indent--;
         writer.WriteLine("}");
     }
 
     /// <summary>Returns "Length" for strings/arrays, "Count" for list/dictionary collections.</summary>
     private static string SizeProperty(ConfigPropertyModel prop) =>
-        prop.Binding is BindingStrategy.Array && !prop.IsCollectionArray ? "Count" :
+        prop.Binding is BindingStrategy.Array or BindingStrategy.NestedConfigCollection && !prop.IsCollectionArray ? "Count" :
         prop.Binding is BindingStrategy.Dictionary ? "Count" : "Length";
 
     /// <summary>
-    /// Emits a <c>failures.Add("...")</c> line using either the user's custom
-    /// <c>ErrorMessage</c> (with <c>{0}</c>, <c>{1}</c>, <c>{2}</c> placeholders
-    /// substituted at generator time) or a built-in default message.
-    /// <c>{0}</c> resolves to the <c>[SectionName:PropertyName]</c> prefix,
-    /// <c>{1}</c> to <paramref name="arg1"/>, and <c>{2}</c> to <paramref name="arg2"/>.
+    /// Emits a <c>failures.Add(...)</c> line using either the user's custom
+    /// <c>ErrorMessage</c> or a built-in default message. Both are expected to
+    /// contain a <c>{0}</c> marker for the display-name prefix and may contain
+    /// <c>{1}</c> / <c>{2}</c> markers for caller-supplied numeric arguments.
+    /// <para>
+    /// <c>{1}</c> and <c>{2}</c> substitute at generator time because they
+    /// resolve to numeric literals.
+    /// </para>
+    /// <para>
+    /// <c>{0}</c> substitutes at <em>runtime</em>, resolving to
+    /// <c>"[" + path + ":PropertyName]"</c> — where <c>path</c> is the full
+    /// configuration path passed into the enclosing <c>Validate</c> call. We
+    /// split the template on <c>{0}</c> at generator time and emit a string
+    /// concat so the runtime prefix is always correct regardless of nesting
+    /// depth (e.g. <c>[Api:Endpoints:1:Url]</c> instead of
+    /// <c>[__endpoint__:Url]</c>).
+    /// </para>
     /// </summary>
     private static void EmitFailureMessage(
         IndentedTextWriter writer,
-        ConfigSectionModel model,
         ConfigPropertyModel prop,
         DataAnnotationModel ann,
         string defaultMessage,
         string? arg1 = null,
         string? arg2 = null)
     {
-        string message;
+        // Prefer the user-supplied ErrorMessage if present; otherwise use the
+        // default template built by the calling Emit*Check helper.
+        var template = ann.ErrorMessage ?? defaultMessage;
 
-        if (ann.ErrorMessage is null)
+        // Substitute {1} and {2} at generator time so the runtime code stays
+        // a static concat of literal segments + one `path` expression.
+        template = template
+            .Replace("{1}", arg1 ?? string.Empty)
+            .Replace("{2}", arg2 ?? string.Empty);
+
+        // Split on {0} — each gap between segments becomes a runtime-built
+        // display-name concat. Most messages have exactly one {0} at the front;
+        // the loop below tolerates zero, one, or many markers.
+        var parts = template.Split(FailureMessageSplitSeparator, System.StringSplitOptions.None);
+
+        writer.Write("failures.Add(");
+        var emittedAny = false;
+
+        for (int i = 0; i < parts.Length; i++)
         {
-            message = defaultMessage;
-        }
-        else
-        {
-            // The user-supplied ErrorMessage may contain {0}, {1}, {2}
-            // placeholders. We substitute them at generator time so the
-            // runtime code is a plain string literal with no allocations.
-            //   {0} → "[SectionName:PropertyName]" (the display name)
-            //   {1} → first arg (min for [Range], etc.)
-            //   {2} → second arg (max for [Range], etc.)
-            var displayName = "[" + Escape(model.SectionName) + ":" + prop.Name + "]";
-            message = ann.ErrorMessage
-                .Replace("{0}", displayName)
-                .Replace("{1}", arg1 ?? string.Empty)
-                .Replace("{2}", arg2 ?? string.Empty);
+            // Emit the runtime display-name between every pair of literal
+            // segments (and thus at every `{0}` marker).
+            if (i > 0)
+            {
+                if (emittedAny)
+                {
+                    writer.Write(" + ");
+                }
+
+                writer.Write("\"[\" + path + \":");
+                writer.Write(prop.Name);
+                writer.Write("]\"");
+                emittedAny = true;
+            }
+
+            // Skip zero-length literal segments — they contribute nothing and
+            // would otherwise emit a stray `""` that hurts readability.
+            if (parts[i].Length == 0)
+            {
+                continue;
+            }
+
+            if (emittedAny)
+            {
+                writer.Write(" + ");
+            }
+
+            writer.Write('"');
+            writer.Write(Escape(parts[i]));
+            writer.Write('"');
+            emittedAny = true;
         }
 
-        writer.Write("failures.Add(\"");
-        writer.Write(Escape(message));
-        writer.WriteLine("\");");
+        // Defensive: if somehow the template was empty and no marker fired,
+        // emit an empty string literal so we never produce `failures.Add();`.
+        if (!emittedAny)
+        {
+            writer.Write("\"\"");
+        }
+
+        writer.WriteLine(");");
     }
 
     /// <summary>Emits <c>if (options.X is not null &amp;&amp; (options.X.Length &lt; min || options.X.Length &gt; max))</c></summary>
@@ -1405,8 +1648,7 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMsg = $"[{model.SectionName}:{prop.Name}] must have length between {minLen} and {maxLen.Value}.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMsg,
+        EmitFailureMessage(writer, prop, ann, "{0} must have length between {1} and {2}.",
             arg1: minLen.ToString(System.Globalization.CultureInfo.InvariantCulture),
             arg2: maxLen.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
         writer.Indent--;
@@ -1435,8 +1677,7 @@ internal static class SourceEmitter
         writer.WriteLine(")");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMinMsg = $"[{model.SectionName}:{prop.Name}] must have minimum length {n}.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMinMsg,
+        EmitFailureMessage(writer, prop, ann, "{0} must have minimum length {1}.",
             arg1: n.ToString(System.Globalization.CultureInfo.InvariantCulture));
         writer.Indent--;
         writer.WriteLine("}");
@@ -1464,8 +1705,7 @@ internal static class SourceEmitter
         writer.WriteLine(")");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMaxMsg = $"[{model.SectionName}:{prop.Name}] must have maximum length {n}.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMaxMsg,
+        EmitFailureMessage(writer, prop, ann, "{0} must have maximum length {1}.",
             arg1: n.ToString(System.Globalization.CultureInfo.InvariantCulture));
         writer.Indent--;
         writer.WriteLine("}");
@@ -1483,8 +1723,7 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMsg = $"[{model.SectionName}:{prop.Name}] does not match the required pattern.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMsg);
+        EmitFailureMessage(writer, prop, ann, "{0} does not match the required pattern.");
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1499,8 +1738,7 @@ internal static class SourceEmitter
         writer.WriteLine(", global::System.UriKind.Absolute, out _))");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMsg = $"[{model.SectionName}:{prop.Name}] is not a valid absolute URL.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMsg);
+        EmitFailureMessage(writer, prop, ann, "{0} is not a valid absolute URL.");
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1517,8 +1755,7 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMsg = $"[{model.SectionName}:{prop.Name}] is not a valid email address.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMsg);
+        EmitFailureMessage(writer, prop, ann, "{0} is not a valid email address.");
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1547,8 +1784,7 @@ internal static class SourceEmitter
         writer.WriteLine("{");
         writer.Indent++;
         var allowedList = string.Join(", ", ann.ValuesArg.AsArray());
-        var defaultAllowedMsg = $"[{model.SectionName}:{prop.Name}] must be one of: {allowedList}.";
-        EmitFailureMessage(writer, model, prop, ann, defaultAllowedMsg, arg1: allowedList);
+        EmitFailureMessage(writer, prop, ann, "{0} must be one of: {1}.", arg1: allowedList);
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1577,8 +1813,7 @@ internal static class SourceEmitter
         writer.WriteLine("{");
         writer.Indent++;
         var deniedList = string.Join(", ", ann.ValuesArg.AsArray());
-        var defaultDeniedMsg = $"[{model.SectionName}:{prop.Name}] must not be one of: {deniedList}.";
-        EmitFailureMessage(writer, model, prop, ann, defaultDeniedMsg, arg1: deniedList);
+        EmitFailureMessage(writer, prop, ann, "{0} must not be one of: {1}.", arg1: deniedList);
         writer.Indent--;
         writer.WriteLine("}");
     }

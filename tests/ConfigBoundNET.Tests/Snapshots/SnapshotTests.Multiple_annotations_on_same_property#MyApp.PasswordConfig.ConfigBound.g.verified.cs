@@ -44,6 +44,9 @@ partial record PasswordConfig
     {
         private static readonly global::System.Text.RegularExpressions.Regex _cb_Regex_DefaultPassword = new global::System.Text.RegularExpressions.Regex(@"^(?=.*[A-Z])(?=.*[0-9])", global::System.Text.RegularExpressions.RegexOptions.Compiled);
         public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, PasswordConfig options)
+            => Validate(name, SectionName, options);
+        
+        public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, string path, PasswordConfig options)
         {
             if (options is null)
             {
@@ -54,22 +57,23 @@ partial record PasswordConfig
             
             if (string.IsNullOrWhiteSpace(options.DefaultPassword))
             {
-                failures.Add("[Pwd:DefaultPassword] is required but was null, empty, or whitespace.");
+                failures.Add("[" + path + ":DefaultPassword] is required but was null, empty, or whitespace.");
             }
             if (options.DefaultPassword is not null && options.DefaultPassword.Length < 8)
             {
-                failures.Add("[Pwd:DefaultPassword] must have minimum length 8.");
+                failures.Add("[" + path + ":DefaultPassword]" + " must have minimum length 8.");
             }
             if (options.DefaultPassword is not null && options.DefaultPassword.Length > 128)
             {
-                failures.Add("[Pwd:DefaultPassword] must have maximum length 128.");
+                failures.Add("[" + path + ":DefaultPassword]" + " must have maximum length 128.");
             }
             if (options.DefaultPassword is not null && !_cb_Regex_DefaultPassword.IsMatch(options.DefaultPassword))
             {
-                failures.Add("[Pwd:DefaultPassword] does not match the required pattern.");
+                failures.Add("[" + path + ":DefaultPassword]" + " does not match the required pattern.");
             }
             
             options.ValidateCustom(failures);
+            options.ValidateCustom(failures, path);
             
             return failures.Count > 0
                 ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)
@@ -85,6 +89,17 @@ partial record PasswordConfig
     /// </summary>
     /// <param name="failures">Mutable list of failure messages. Add to it to report errors.</param>
     partial void ValidateCustom(global::System.Collections.Generic.List<string> failures);
+    
+    /// <summary>
+    /// Path-aware overload of the custom validation hook. Implement this
+    /// partial method instead of (or alongside) the single-argument form
+    /// when you want to include the full runtime configuration path in
+    /// your failure messages — useful for types that can be used as
+    /// nested or element configs, where the path differs per usage site.
+    /// </summary>
+    /// <param name="failures">Mutable list of failure messages. Add to it to report errors.</param>
+    /// <param name="path">Full configuration path to this options instance, e.g. <c>"Api:Endpoints:1"</c>.</param>
+    partial void ValidateCustom(global::System.Collections.Generic.List<string> failures, string path);
 }
 
 /// <summary>

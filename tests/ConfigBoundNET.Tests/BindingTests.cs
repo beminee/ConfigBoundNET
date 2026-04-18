@@ -509,6 +509,385 @@ public sealed class BindingTests
     }
 
     [Fact]
+    public void NestedConfig_list_binds_from_in_memory_configuration()
+    {
+        // List<EndpointConfig> where EndpointConfig is itself [ConfigSection]-
+        // annotated. Each child section under "Api:Endpoints:{i}" is passed to
+        // EndpointConfig's generated (IConfigurationSection) constructor.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public List<EndpointConfig> Endpoints { get; init; } = new();
+            }
+
+            [ConfigSection("__endpoint__")]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+                public System.TimeSpan Timeout { get; init; }
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "ApiConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Api:Endpoints:0:Url"] = "https://a.example/",
+                ["Api:Endpoints:0:Timeout"] = "00:00:10",
+                ["Api:Endpoints:1:Url"] = "https://b.example/",
+                ["Api:Endpoints:1:Timeout"] = "00:00:20",
+            });
+
+        var endpoints = GetProp(bound, "Endpoints")!;
+        var count = (int)endpoints.GetType().GetProperty("Count")!.GetValue(endpoints)!;
+        Assert.Equal(2, count);
+
+        // Enumerate to verify element values.
+        var list = (System.Collections.IEnumerable)endpoints;
+        var items = new System.Collections.Generic.List<object>();
+        foreach (var item in list) items.Add(item);
+
+        Assert.Equal("https://a.example/", GetProp(items[0], "Url"));
+        Assert.Equal(System.TimeSpan.FromSeconds(10), GetProp(items[0], "Timeout"));
+        Assert.Equal("https://b.example/", GetProp(items[1], "Url"));
+        Assert.Equal(System.TimeSpan.FromSeconds(20), GetProp(items[1], "Timeout"));
+    }
+
+    [Fact]
+    public void NestedConfig_array_binds_from_in_memory_configuration()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public EndpointConfig[] Endpoints { get; init; } = System.Array.Empty<EndpointConfig>();
+            }
+
+            [ConfigSection("__endpoint__")]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "ApiConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Api:Endpoints:0:Url"] = "https://a.example/",
+                ["Api:Endpoints:1:Url"] = "https://b.example/",
+            });
+
+        var endpoints = (System.Array)GetProp(bound, "Endpoints")!;
+        Assert.Equal(2, endpoints.Length);
+        Assert.Equal("https://a.example/", GetProp(endpoints.GetValue(0)!, "Url"));
+        Assert.Equal("https://b.example/", GetProp(endpoints.GetValue(1)!, "Url"));
+    }
+
+    [Fact]
+    public void NestedConfig_readonly_list_binds_from_in_memory_configuration()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public IReadOnlyList<EndpointConfig> Endpoints { get; init; } = new List<EndpointConfig>();
+            }
+
+            [ConfigSection("__endpoint__")]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "ApiConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Api:Endpoints:0:Url"] = "https://a.example/",
+            });
+
+        var endpoints = GetProp(bound, "Endpoints")!;
+        var count = (int)endpoints.GetType().GetProperty("Count")!.GetValue(endpoints)!;
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
+    public void NestedConfig_list_absent_section_preserves_default()
+    {
+        // No "Api:Endpoints" children → generator must leave the user-declared
+        // default (an empty List<T> from the field initializer) untouched.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public List<EndpointConfig> Endpoints { get; init; } = new();
+            }
+
+            [ConfigSection("__endpoint__")]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "ApiConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Api:Other"] = "noise",
+            });
+
+        var endpoints = GetProp(bound, "Endpoints")!;
+        var count = (int)endpoints.GetType().GetProperty("Count")!.GetValue(endpoints)!;
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
+    public void NestedConfig_list_failure_message_includes_full_path()
+    {
+        // An out-of-range value on element 1 must produce a failure keyed by
+        // "[Api:Endpoints:1:Port]", NOT "[__endpoint__:Port]". This proves the
+        // path-aware Validator overload threads the full path through nested
+        // collection recursion.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public List<EndpointConfig> Endpoints { get; init; } = new();
+            }
+
+            [ConfigSection("__endpoint__")]
+            public partial record EndpointConfig
+            {
+                [Range(1, 65535)]
+                public int Port { get; init; }
+            }
+            """;
+
+        var ex = Assert.ThrowsAny<System.Exception>(() =>
+            GeneratorHarness.CompileAndBind(
+                Source,
+                "ApiConfig",
+                new System.Collections.Generic.Dictionary<string, string?>
+                {
+                    ["Api:Endpoints:0:Port"] = "8080",
+                    ["Api:Endpoints:1:Port"] = "999999",
+                }));
+
+        var message = ex.InnerException?.Message ?? ex.Message;
+        Assert.Contains("[Api:Endpoints:1:Port]", message);
+        Assert.DoesNotContain("__endpoint__", message);
+    }
+
+    [Fact]
+    public void Single_nested_failure_message_includes_parent_path()
+    {
+        // Single-nested recursion: the parent's Validate passes path + ":Retry"
+        // down, so the failure reads "[Db:Retry:MaxAttempts]" instead of
+        // "[__inner__:MaxAttempts]".
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+                public RetryConfig Retry { get; init; } = default!;
+            }
+
+            [ConfigSection("__inner__")]
+            public partial record RetryConfig
+            {
+                [Range(1, 20)]
+                public int MaxAttempts { get; init; }
+            }
+            """;
+
+        var ex = Assert.ThrowsAny<System.Exception>(() =>
+            GeneratorHarness.CompileAndBind(
+                Source,
+                "DbConfig",
+                new System.Collections.Generic.Dictionary<string, string?>
+                {
+                    ["Db:Conn"] = "hello",
+                    ["Db:Retry:MaxAttempts"] = "99",
+                }));
+
+        var message = ex.InnerException?.Message ?? ex.Message;
+        Assert.Contains("[Db:Retry:MaxAttempts]", message);
+        Assert.DoesNotContain("__inner__", message);
+    }
+
+    [Fact]
+    public void NestedConfig_list_with_nullable_element_round_trips()
+    {
+        // List<EndpointConfig?> must bind and validate identically to
+        // List<EndpointConfig> — the binder never produces null elements,
+        // and the generated container matches the user's declaration so the
+        // assignment type-checks under strict nullable.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            #nullable enable
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public List<EndpointConfig?> Endpoints { get; init; } = new();
+            }
+
+            [ConfigSection("__endpoint__")]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "ApiConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Api:Endpoints:0:Url"] = "https://a.example/",
+                ["Api:Endpoints:1:Url"] = "https://b.example/",
+            });
+
+        var endpoints = GetProp(bound, "Endpoints")!;
+        var count = (int)endpoints.GetType().GetProperty("Count")!.GetValue(endpoints)!;
+        Assert.Equal(2, count);
+
+        var list = (System.Collections.IEnumerable)endpoints;
+        foreach (var item in list)
+        {
+            Assert.NotNull(item);
+        }
+    }
+
+    [Fact]
+    public void Path_aware_ValidateCustom_receives_full_path()
+    {
+        // The path-aware ValidateCustom overload must receive "Db:Retry" when
+        // RetryConfig is reached through the nested-config recursion, not its
+        // own SectionName "__inner__".
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+                public RetryConfig Retry { get; init; } = default!;
+            }
+
+            [ConfigSection("__inner__")]
+            public partial record RetryConfig
+            {
+                public int MaxAttempts { get; init; }
+
+                partial void ValidateCustom(List<string> failures, string path)
+                {
+                    // Unconditionally add a failure that quotes the path, so
+                    // the test can assert on what we received.
+                    failures.Add("[" + path + "] custom-hook saw path = '" + path + "'.");
+                }
+            }
+            """;
+
+        var ex = Assert.ThrowsAny<System.Exception>(() =>
+            GeneratorHarness.CompileAndBind(
+                Source,
+                "DbConfig",
+                new System.Collections.Generic.Dictionary<string, string?>
+                {
+                    ["Db:Conn"] = "hello",
+                    ["Db:Retry:MaxAttempts"] = "3",
+                }));
+
+        var message = ex.InnerException?.Message ?? ex.Message;
+        Assert.Contains("custom-hook saw path = 'Db:Retry'", message);
+    }
+
+    [Fact]
+    public void NestedConfig_list_inner_validation_failures_surface()
+    {
+        // EndpointConfig has [Range(1, 65535)] on Port. An out-of-range value
+        // on any element must fail the parent's validation.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public List<EndpointConfig> Endpoints { get; init; } = new();
+            }
+
+            [ConfigSection("__endpoint__")]
+            public partial record EndpointConfig
+            {
+                [Range(1, 65535)]
+                public int Port { get; init; }
+            }
+            """;
+
+        var ex = Assert.ThrowsAny<System.Exception>(() =>
+            GeneratorHarness.CompileAndBind(
+                Source,
+                "ApiConfig",
+                new System.Collections.Generic.Dictionary<string, string?>
+                {
+                    ["Api:Endpoints:0:Port"] = "8080",
+                    ["Api:Endpoints:1:Port"] = "999999",
+                }));
+
+        Assert.Contains("must be between 1 and 65535", ex.InnerException?.Message ?? ex.Message);
+    }
+
+    [Fact]
     public void Nested_config_validation_passes_when_inner_is_valid()
     {
         const string Source = """

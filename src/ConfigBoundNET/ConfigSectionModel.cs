@@ -72,9 +72,12 @@ internal enum ConfigTypeKind
 /// emitter so it can write <c>null</c> back when the configuration key is absent.
 /// </param>
 /// <param name="NestedTypeFullyQualifiedName">
-/// For <see cref="BindingStrategy.NestedConfig"/>, the fully qualified name of the
-/// nested config type (which must itself be <c>[ConfigSection]</c>-annotated and will
-/// therefore have its own generated <c>Bind</c> method to call into).
+/// For <see cref="BindingStrategy.NestedConfig"/> and
+/// <see cref="BindingStrategy.NestedConfigCollection"/>, the fully qualified name
+/// of the nested config type (which must itself be <c>[ConfigSection]</c>-annotated
+/// and will therefore have its own generated <c>Bind</c> method to call into).
+/// For the collection strategy this is the <em>element</em> type, not the
+/// container type.
 /// </param>
 /// <param name="EnumFullyQualifiedName">
 /// For <see cref="BindingStrategy.Enum"/>, the fully qualified enum type name passed
@@ -174,6 +177,16 @@ internal enum BindingStrategy
 
     /// <summary><c>Dictionary&lt;string, T&gt;</c> or <c>IDictionary&lt;string, T&gt;</c>; keys from <c>child.Key</c>, values parsed individually.</summary>
     Dictionary,
+
+    /// <summary>
+    /// A collection (<c>T[]</c>, <c>List&lt;T&gt;</c>, <c>IReadOnlyList&lt;T&gt;</c>, etc.)
+    /// whose element type is itself <c>[ConfigSection]</c>-annotated. Each child
+    /// section is passed to the element type's generated
+    /// <c>(IConfigurationSection)</c> constructor. <c>NestedTypeFullyQualifiedName</c>
+    /// carries the element FQN and <c>IsCollectionArray</c> disambiguates
+    /// <c>T[]</c> from <c>List&lt;T&gt;</c> / interfaces.
+    /// </summary>
+    NestedConfigCollection,
 }
 
 /// <summary>
@@ -400,7 +413,7 @@ internal static class ModelBuilder
 
             // Scan for DataAnnotations attributes and convert them into
             // flat, equatable models the emitter can turn into explicit checks.
-            var isCollection = classification.Strategy is BindingStrategy.Array or BindingStrategy.Dictionary;
+            var isCollection = classification.Strategy is BindingStrategy.Array or BindingStrategy.Dictionary or BindingStrategy.NestedConfigCollection;
             var annotations = ExtractDataAnnotations(
                 property, classification.Strategy, isString, isRequired, isCollection,
                 diagnostics, syntax);
@@ -606,6 +619,23 @@ internal static class ModelBuilder
         // ── Arrays (T[]) ──────────────────────────────────────────────────
         if (type is IArrayTypeSymbol arrayType && arrayType.Rank == 1)
         {
+            // Complex-element collection takes priority over scalar ClassifyElement:
+            // an element type that is itself [ConfigSection]-annotated is bound
+            // via its own generated (IConfigurationSection) constructor, not via
+            // scalar TryParse. Without this branch the element would fall through
+            // to Unsupported and the whole property would raise CB0010.
+            if (TryClassifyNestedElement(arrayType.ElementType, out var arrElemFqn))
+            {
+                return new BindingClassification(
+                    BindingStrategy.NestedConfigCollection, false,
+                    NestedTypeFullyQualifiedName: arrElemFqn,
+                    EnumFullyQualifiedName: null,
+                    ParseTypeKeyword: null,
+                    CollectionElementStrategy: BindingStrategy.Unsupported,
+                    CollectionElementKeyword: null,
+                    IsCollectionArray: true);
+            }
+
             var elem = ClassifyElement(arrayType.ElementType);
             if (elem.Strategy != BindingStrategy.Unsupported)
             {
@@ -622,6 +652,21 @@ internal static class ModelBuilder
 
             if (genericType.TypeArguments.Length == 1 && IsListLikeInterface(origDef))
             {
+                // Same priority rule as the array branch above: complex-element
+                // collections have to be intercepted before ClassifyElement sees
+                // the type, otherwise the property falls through to Unsupported.
+                if (TryClassifyNestedElement(genericType.TypeArguments[0], out var listElemFqn))
+                {
+                    return new BindingClassification(
+                        BindingStrategy.NestedConfigCollection, false,
+                        NestedTypeFullyQualifiedName: listElemFqn,
+                        EnumFullyQualifiedName: null,
+                        ParseTypeKeyword: null,
+                        CollectionElementStrategy: BindingStrategy.Unsupported,
+                        CollectionElementKeyword: null,
+                        IsCollectionArray: false);
+                }
+
                 var elem = ClassifyElement(genericType.TypeArguments[0]);
                 if (elem.Strategy != BindingStrategy.Unsupported)
                 {
@@ -706,6 +751,43 @@ internal static class ModelBuilder
         "System.Collections.Generic.Dictionary<TKey, TValue>" or
         "System.Collections.Generic.IDictionary<TKey, TValue>" or
         "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>";
+
+    /// <summary>
+    /// Returns true iff <paramref name="elementType"/> is a class or record
+    /// annotated with <c>[ConfigSection]</c>, and reports its fully qualified
+    /// name. Used to classify collections whose element type is itself a
+    /// nested config (<c>List&lt;EndpointConfig&gt;</c>, <c>EndpointConfig[]</c>,
+    /// etc.).
+    /// <para>
+    /// The reported FQN <em>preserves</em> nullable reference annotations
+    /// (<c>T?</c>) so the emitted internal container (e.g. <c>List&lt;T?&gt;</c>)
+    /// matches the user's declared property type. Without this, assigning a
+    /// <c>List&lt;T&gt;</c> to a <c>List&lt;T?&gt;</c> property would fail type-check
+    /// under strict covariance. Semantically the binder still never produces
+    /// null elements; the annotation is preserved for the type system, not
+    /// because nulls are expected.
+    /// </para>
+    /// </summary>
+    private static bool TryClassifyNestedElement(ITypeSymbol elementType, out string? fullyQualifiedName)
+    {
+        if (elementType is INamedTypeSymbol named &&
+            named.TypeKind == TypeKind.Class &&
+            HasConfigSectionAttribute(named))
+        {
+            // IncludeNullableReferenceTypeModifier preserves the `?` that the
+            // user wrote on the element (e.g. List<EndpointConfig?> keeps the
+            // `?` in the FQN). FullyQualifiedFormat alone drops it.
+            fullyQualifiedName = named.ToDisplayString(
+                SymbolDisplayFormat.FullyQualifiedFormat
+                    .WithMiscellaneousOptions(
+                        SymbolDisplayFormat.FullyQualifiedFormat.MiscellaneousOptions
+                        | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier));
+            return true;
+        }
+
+        fullyQualifiedName = null;
+        return false;
+    }
 
     /// <summary>Returns true when <paramref name="type"/> declares a [ConfigSection] attribute.</summary>
     private static bool HasConfigSectionAttribute(INamedTypeSymbol type)

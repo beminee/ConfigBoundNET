@@ -54,7 +54,7 @@ This intercepts `services.Configure<T>(IConfiguration)` and `config.GetSection("
 | **Custom cross-field validation** | No | N/A | **Yes** (`partial void ValidateCustom`) |
 | **Nested config binding** | N/A | Partial | **Yes** (recursive constructor) |
 | **Nested config validation** | `[ValidateObjectMembers]` | N/A | **Yes** (automatic recursion) |
-| **Collection binding** | N/A | Yes | **Yes** (`T[]`, `List<T>`, `Dictionary<string, T>`) |
+| **Collection binding** | N/A | Yes (reflection-based for complex elements) | **Yes, AOT-safe** (`T[]`, `List<T>`, `Dictionary<string, T>`, and `List<T>` / `T[]` / `IReadOnlyList<T>` where `T` is `[ConfigSection]`-annotated) |
 | **Build-time diagnostics** | No | No | **Yes** (CB0001–CB0010) |
 | **IDE code fixes** | No | No | **Yes** (5 lightbulb actions) |
 | **Build-time regex validation** | No | N/A | **Yes** (CB0008) |

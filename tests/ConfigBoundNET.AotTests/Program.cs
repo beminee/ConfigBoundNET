@@ -66,6 +66,15 @@ Check(failures, "Tags.Length", db.Tags.Length, 2);
 Check(failures, "Tags[0]", db.Tags[0], "primary");
 Check(failures, "Tags[1]", db.Tags[1], "replica");
 
+// Collection-of-[ConfigSection] binding: each child section is passed to
+// EndpointConfig's generated (IConfigurationSection) constructor. This is the
+// path that was CB0010 before the NestedConfigCollection strategy shipped.
+Check(failures, "Endpoints.Count", db.Endpoints.Count, 2);
+Check(failures, "Endpoints[0].Url", db.Endpoints[0].Url, "https://primary.example/");
+Check(failures, "Endpoints[0].Timeout", db.Endpoints[0].Timeout, TimeSpan.FromSeconds(10));
+Check(failures, "Endpoints[1].Url", db.Endpoints[1].Url, "https://replica.example/");
+Check(failures, "Endpoints[1].Timeout", db.Endpoints[1].Timeout, TimeSpan.FromSeconds(20));
+
 // ── Report. ────────────────────────────────────────────────────────────────
 if (failures.Count == 0)
 {
@@ -167,6 +176,14 @@ namespace ConfigBoundNET.AotTests
         /// directly. The outer constructor recurses into the inner one.
         /// </summary>
         public RetryConfig Retry { get; init; } = default!;
+
+        /// <summary>
+        /// Collection of nested complex types. The classifier returns
+        /// <c>BindingStrategy.NestedConfigCollection</c> and the emitter
+        /// iterates <c>section.GetChildren()</c>, passing each child to
+        /// <see cref="EndpointConfig"/>'s generated constructor.
+        /// </summary>
+        public List<EndpointConfig> Endpoints { get; init; } = new();
     }
 
     /// <summary>
@@ -181,5 +198,17 @@ namespace ConfigBoundNET.AotTests
     {
         public int MaxAttempts { get; init; }
         public TimeSpan Backoff { get; init; }
+    }
+
+    /// <summary>
+    /// Element type for the <see cref="DbConfig.Endpoints"/> collection. Must
+    /// carry <c>[ConfigSection]</c> so the classifier recognises the outer
+    /// <c>List&lt;EndpointConfig&gt;</c> as <c>NestedConfigCollection</c>.
+    /// </summary>
+    [ConfigSection("__endpoint__")]
+    internal partial record EndpointConfig
+    {
+        public string Url { get; init; } = default!;
+        public TimeSpan Timeout { get; init; }
     }
 }

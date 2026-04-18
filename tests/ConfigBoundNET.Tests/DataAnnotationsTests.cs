@@ -215,6 +215,71 @@ public sealed class DataAnnotationsTests
         Assert.Contains("options.Name.Length > 50", generated);
     }
 
+    // ── Length on collections of complex elements ───────────────────────
+
+    [Fact]
+    public void MinLength_on_nested_config_list_emits_count_check()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                [MinLength(1)]
+                public List<EndpointConfig> Endpoints { get; init; } = new();
+            }
+
+            [ConfigSection("__endpoint__")]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        var result = GeneratorHarness.Run(Source);
+        var generated = result.GetEmittedConfigSource();
+
+        // List<T>.Count is the size member for non-array collections.
+        Assert.Contains("options.Endpoints.Count < 1", generated);
+        Assert.DoesNotContain(result.Diagnostics, d => d.Id == "CB0007");
+    }
+
+    [Fact]
+    public void MaxLength_on_nested_config_array_emits_length_check()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                [MaxLength(3)]
+                public EndpointConfig[] Endpoints { get; init; } = System.Array.Empty<EndpointConfig>();
+            }
+
+            [ConfigSection("__endpoint__")]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        var result = GeneratorHarness.Run(Source);
+        var generated = result.GetEmittedConfigSource();
+
+        // T[] uses .Length.
+        Assert.Contains("options.Endpoints.Length > 3", generated);
+        Assert.DoesNotContain(result.Diagnostics, d => d.Id == "CB0007");
+    }
+
     // ── Diagnostic tests ─────────────────────────────────────────────────
 
     [Fact]
@@ -360,7 +425,12 @@ public sealed class DataAnnotationsTests
 
         var validatorType = bound.GetType().GetNestedType("Validator")!;
         var validator = System.Activator.CreateInstance(validatorType)!;
-        var validateMethod = validatorType.GetMethod("Validate")!;
+        // The generator emits two Validate overloads (the IValidateOptions<T>
+        // two-arg entry point and a path-aware three-arg one). Disambiguate by
+        // explicit parameter types.
+        var validateMethod = validatorType.GetMethod(
+            "Validate",
+            new[] { typeof(string), bound.GetType() })!;
         var result = validateMethod.Invoke(validator, new object?[] { null, bound })!;
         var succeeded = (bool)result.GetType().GetProperty("Succeeded")!.GetValue(result)!;
 

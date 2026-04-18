@@ -82,7 +82,7 @@ ConfigBoundNET ships as a single analyzer package. There is no runtime dependenc
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="ConfigBoundNET" Version="2.0.1" />
+  <PackageReference Include="ConfigBoundNET" Version="2.1.0" />
 </ItemGroup>
 ```
 
@@ -157,7 +157,9 @@ Misapplied annotations are caught at **build time** with dedicated diagnostics (
 
 ## Custom validation hook
 
-For cross-field rules that no single-property attribute can express, ConfigBoundNET emits a `partial void ValidateCustom` method on every annotated type. Implement it to add your own checks:
+For cross-field rules that no single-property attribute can express, ConfigBoundNET emits **two** partial `ValidateCustom` methods on every annotated type. Implement whichever fits; unimplemented hooks are removed at compile time.
+
+### Simple form
 
 ```csharp
 [ConfigSection("Db")]
@@ -177,7 +179,28 @@ public partial record DbConfig
 }
 ```
 
-The hook runs **after** all generated checks (null/whitespace + DataAnnotations), so you can safely read already-validated properties. If you don't implement it, the C# compiler removes the call site entirely — zero runtime cost.
+### Path-aware form (recommended for reusable types)
+
+When the same type may be used standalone **and** as a nested or list-element config, the second overload hands you the full runtime configuration path so your failure messages stay correctly scoped regardless of where the type sits in the tree:
+
+```csharp
+[ConfigSection("__endpoint__")]  // section name only used when registered standalone
+public partial record EndpointConfig
+{
+    public string? Host { get; init; }
+    public string? Url { get; init; }
+
+    partial void ValidateCustom(List<string> failures, string path)
+    {
+        if (Host is null && Url is null)
+            failures.Add($"[{path}] Either Host or Url must be set.");
+    }
+}
+```
+
+Used standalone: `[__endpoint__] Either Host or Url must be set.` Used as `List<EndpointConfig>` under `ApiConfig("Api")`, element 2: `[Api:Endpoints:2] Either Host or Url must be set.`
+
+Both hooks run **after** all generated checks (null/whitespace + DataAnnotations + nested validation), so you can safely read already-validated properties. Any hook you don't implement costs nothing at runtime — the C# compiler removes the call site entirely.
 
 ---
 
@@ -207,8 +230,11 @@ Collections are fully supported:
 | `T[]` | `List<T>` → `.ToArray()` |
 | `List<T>`, `IList<T>`, `ICollection<T>`, `IEnumerable<T>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>` | `new List<T>()` |
 | `Dictionary<string, T>`, `IDictionary<string, T>`, `IReadOnlyDictionary<string, T>` | `new Dictionary<string, T>()` |
+| `List<T>` / `T[]` / `IReadOnlyList<T>` (and other list-like shapes) where `T` is `[ConfigSection]`-annotated | iterates `GetChildren()` and calls `new T(child)` per element; each element is validated via its own generated `Validator` |
 
-Element types can be any scalar from the table above. If the config section is absent, user-declared defaults are preserved.
+Element types can be any scalar from the table above, or any `[ConfigSection]`-annotated type for the complex-element variant. If the config section is absent, user-declared defaults are preserved.
+
+Element nullability annotations (`List<T?>`, `T?[]`, `IReadOnlyList<T?>`) are accepted but have no effect on binding — the generator never produces null elements. The annotation is preserved in the emitted container type so the assignment type-checks under strict nullable; the validator defensively null-guards each element.
 
 ## Unsupported collections
 
@@ -218,7 +244,7 @@ These are explicitly **out of scope** for now and will remain `Unsupported` (CB0
 |---|---|
 | `HashSet<T>`, `SortedSet<T>` | IConfiguration doesn't distinguish sets from lists; semantically the user wants deduplication, but config arrays often don't guarantee uniqueness. Low demand. Add later if requested. |
 | `Dictionary<TKey, T>` where TKey != `string` | IConfigurationSection child keys are always strings. Non-string-keyed dictionaries would require a parse step for the key itself and `IConfiguration` doesn't model that. |
-| `List<ComplexType>` where ComplexType is a `[ConfigSection]`-annotated record | Each array element would be a sub-section with its own key-value children. Doable (the child is an `IConfigurationSection` itself, and we'd call `new ComplexType(child)`), but it adds recursive complexity. **Tracked as a follow-up.** |
+| `Dictionary<string, ComplexType>` where ComplexType is a `[ConfigSection]`-annotated record | Doable — each child would become `dict[child.Key] = new ComplexType(child)` — but needs its own key-mapping codegen and test surface. Tracked as a follow-up. |
 | `T[][]`, `List<List<T>>`, nested collections | IConfiguration's flat key model (`Section:0:0`) technically supports these, but the code generation becomes deeply nested and the use case is rare. Not worth the complexity. |
 | `ImmutableArray<T>`, `ImmutableList<T>`, `FrozenSet<T>` | Would require extra package references (`System.Collections.Immutable`) in the consumer. Support later if demanded. |
 | `Queue<T>`, `Stack<T>`, `LinkedList<T>`, `ConcurrentBag<T>` | Exotic for config. No demand. |
@@ -438,7 +464,7 @@ ConfigBoundNET is at **v2.0.0** and feature-complete for its core remit: declare
 
 ### Planned
 
-- [ ] **`List<[ConfigSection]>` — complex nested collections.** Today a `List<EndpointConfig>` where `EndpointConfig` is itself `[ConfigSection]`-annotated falls under CB0010. Each array element is already an `IConfigurationSection`, so the emitter can iterate `section.GetChildren()` and call `new EndpointConfig(child)` per element. Closes the last honest gap in the binding story.
+- [x] **`List<[ConfigSection]>` — complex nested collections.** ✅ `List<T>` / `T[]` / `IReadOnlyList<T>` (and the other list-like shapes) bind via `section.GetChildren()` + `new T(child)` per element when `T` is itself `[ConfigSection]`-annotated. Each element is validated through its own generated `Validator`, and failures are merged into the parent's result with an index-tagged named-options key. `[MinLength]`/`[MaxLength]` work on these collections via `.Count` / `.Length`. `Dictionary<string, ComplexType>` remains a follow-up.
 - [ ] **JSON schema emission for `appsettings.json`.** Emit a `.schema.json` at build time from the `[ConfigSection]` graph (types, required-ness, `[Range]` bounds, enum values, regex patterns). Wired via `"$schema"` in `appsettings.json`, users get IntelliSense and red squiggles on config values — no runtime cost, enormous DX win.
 - [ ] **`[Sensitive]` attribute + redacted `ToString`.** Emit an override that prints `Conn = ***` for marked properties so `logger.LogInformation("{@Config}", opts)` stops leaking secrets. Today users either write this by hand or accept the footgun.
 - [ ] **Analyzer for stringly-typed config access.** When a `[ConfigSection("Db")]` exists, flag `configuration["Db:Conn"]` / `configuration.GetValue<T>("Db:…")` and suggest injecting `IOptions<DbConfig>` instead. Turns the generator into a migration tool for existing codebases.

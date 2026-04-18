@@ -98,6 +98,9 @@ partial record TypesConfig
     public sealed class Validator : global::Microsoft.Extensions.Options.IValidateOptions<TypesConfig>
     {
         public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, TypesConfig options)
+            => Validate(name, SectionName, options);
+        
+        public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, string path, TypesConfig options)
         {
             if (options is null)
             {
@@ -108,14 +111,15 @@ partial record TypesConfig
             
             if (string.IsNullOrWhiteSpace(options.Text))
             {
-                failures.Add("[Types:Text] is required but was null, empty, or whitespace.");
+                failures.Add("[" + path + ":Text] is required but was null, empty, or whitespace.");
             }
             if (options.Endpoint is null)
             {
-                failures.Add("[Types:Endpoint] is required but was null.");
+                failures.Add("[" + path + ":Endpoint] is required but was null.");
             }
             
             options.ValidateCustom(failures);
+            options.ValidateCustom(failures, path);
             
             return failures.Count > 0
                 ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)
@@ -131,6 +135,17 @@ partial record TypesConfig
     /// </summary>
     /// <param name="failures">Mutable list of failure messages. Add to it to report errors.</param>
     partial void ValidateCustom(global::System.Collections.Generic.List<string> failures);
+    
+    /// <summary>
+    /// Path-aware overload of the custom validation hook. Implement this
+    /// partial method instead of (or alongside) the single-argument form
+    /// when you want to include the full runtime configuration path in
+    /// your failure messages — useful for types that can be used as
+    /// nested or element configs, where the path differs per usage site.
+    /// </summary>
+    /// <param name="failures">Mutable list of failure messages. Add to it to report errors.</param>
+    /// <param name="path">Full configuration path to this options instance, e.g. <c>"Api:Endpoints:1"</c>.</param>
+    partial void ValidateCustom(global::System.Collections.Generic.List<string> failures, string path);
 }
 
 /// <summary>

@@ -68,6 +68,9 @@ partial record NetConfig
     public sealed class Validator : global::Microsoft.Extensions.Options.IValidateOptions<NetConfig>
     {
         public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, NetConfig options)
+            => Validate(name, SectionName, options);
+        
+        public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, string path, NetConfig options)
         {
             if (options is null)
             {
@@ -78,18 +81,19 @@ partial record NetConfig
             
             if (options.Hosts is null)
             {
-                failures.Add("[Net:Hosts] is required but was null.");
+                failures.Add("[" + path + ":Hosts] is required but was null.");
             }
             if (options.Ports is null)
             {
-                failures.Add("[Net:Ports] is required but was null.");
+                failures.Add("[" + path + ":Ports] is required but was null.");
             }
             if (options.Headers is null)
             {
-                failures.Add("[Net:Headers] is required but was null.");
+                failures.Add("[" + path + ":Headers] is required but was null.");
             }
             
             options.ValidateCustom(failures);
+            options.ValidateCustom(failures, path);
             
             return failures.Count > 0
                 ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)
@@ -105,6 +109,17 @@ partial record NetConfig
     /// </summary>
     /// <param name="failures">Mutable list of failure messages. Add to it to report errors.</param>
     partial void ValidateCustom(global::System.Collections.Generic.List<string> failures);
+    
+    /// <summary>
+    /// Path-aware overload of the custom validation hook. Implement this
+    /// partial method instead of (or alongside) the single-argument form
+    /// when you want to include the full runtime configuration path in
+    /// your failure messages — useful for types that can be used as
+    /// nested or element configs, where the path differs per usage site.
+    /// </summary>
+    /// <param name="failures">Mutable list of failure messages. Add to it to report errors.</param>
+    /// <param name="path">Full configuration path to this options instance, e.g. <c>"Api:Endpoints:1"</c>.</param>
+    partial void ValidateCustom(global::System.Collections.Generic.List<string> failures, string path);
 }
 
 /// <summary>

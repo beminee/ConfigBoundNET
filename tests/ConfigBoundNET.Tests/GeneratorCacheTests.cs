@@ -68,6 +68,8 @@ public sealed class GeneratorCacheTests
             public Dictionary<string, string> Headers { get; init; } = new();
 
             public RetryConfig Retry { get; init; } = default!;
+
+            public List<EndpointConfig> Endpoints { get; init; } = new();
         }
 
         [ConfigSection("Retry")]
@@ -75,6 +77,12 @@ public sealed class GeneratorCacheTests
         {
             [Range(1, 20)]
             public int MaxAttempts { get; init; } = 3;
+        }
+
+        [ConfigSection("__endpoint__")]
+        public partial record EndpointConfig
+        {
+            public string Url { get; init; } = default!;
         }
 
         public enum LogLevel { Trace, Debug, Info, Warn, Error }
