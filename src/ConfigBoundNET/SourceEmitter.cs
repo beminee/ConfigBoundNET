@@ -1470,7 +1470,7 @@ internal static class SourceEmitter
 
     /// <summary>Returns "Length" for strings/arrays, "Count" for list/dictionary collections.</summary>
     private static string SizeProperty(ConfigPropertyModel prop) =>
-        prop.Binding is BindingStrategy.Array && !prop.IsCollectionArray ? "Count" :
+        prop.Binding is BindingStrategy.Array or BindingStrategy.NestedConfigCollection && !prop.IsCollectionArray ? "Count" :
         prop.Binding is BindingStrategy.Dictionary ? "Count" : "Length";
 
     /// <summary>
