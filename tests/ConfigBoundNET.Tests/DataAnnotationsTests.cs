@@ -425,7 +425,12 @@ public sealed class DataAnnotationsTests
 
         var validatorType = bound.GetType().GetNestedType("Validator")!;
         var validator = System.Activator.CreateInstance(validatorType)!;
-        var validateMethod = validatorType.GetMethod("Validate")!;
+        // The generator emits two Validate overloads (the IValidateOptions<T>
+        // two-arg entry point and a path-aware three-arg one). Disambiguate by
+        // explicit parameter types.
+        var validateMethod = validatorType.GetMethod(
+            "Validate",
+            new[] { typeof(string), bound.GetType() })!;
         var result = validateMethod.Invoke(validator, new object?[] { null, bound })!;
         var succeeded = (bool)result.GetType().GetProperty("Succeeded")!.GetValue(result)!;
 

@@ -1320,6 +1320,13 @@ internal static class SourceEmitter
     private const string EmailRegexPattern = @"^[^@\s]+@[^@\s]+\.[^@\s]+$";
 
     /// <summary>
+    /// Separator array reused by <see cref="EmitFailureMessage"/>'s split on
+    /// <c>{0}</c>. Cached as a static field so we don't re-allocate on every
+    /// annotation (CA1861).
+    /// </summary>
+    private static readonly string[] FailureMessageSplitSeparator = { "{0}" };
+
+    /// <summary>
     /// Emits precompiled <c>private static readonly Regex</c> fields inside
     /// the Validator class for every <see cref="DataAnnotationKind.RegularExpression"/>
     /// and <see cref="DataAnnotationKind.EmailAddress"/> annotation.
@@ -1427,9 +1434,7 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
+        writer.Write("failures.Add(\"[\" + path + \":");
         writer.Write(prop.Name);
         writer.WriteLine("] is required but was null, empty, or whitespace.\");");
         writer.Indent--;
@@ -1444,9 +1449,7 @@ internal static class SourceEmitter
         writer.WriteLine(" is null)");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[");
-        writer.Write(Escape(model.SectionName));
-        writer.Write(':');
+        writer.Write("failures.Add(\"[\" + path + \":");
         writer.Write(prop.Name);
         writer.WriteLine("] is required but was null.\");");
         writer.Indent--;
@@ -1475,8 +1478,9 @@ internal static class SourceEmitter
         writer.WriteLine(")");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMsg = $"[{model.SectionName}:{prop.Name}] must be between {min} and {max}.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMsg, arg1: min, arg2: max);
+        // {0} is substituted at runtime to "[" + path + ":Prop]".
+        // {1} and {2} are substituted at generator time to min / max literals.
+        EmitFailureMessage(writer, prop, ann, "{0} must be between {1} and {2}.", arg1: min, arg2: max);
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1487,45 +1491,93 @@ internal static class SourceEmitter
         prop.Binding is BindingStrategy.Dictionary ? "Count" : "Length";
 
     /// <summary>
-    /// Emits a <c>failures.Add("...")</c> line using either the user's custom
-    /// <c>ErrorMessage</c> (with <c>{0}</c>, <c>{1}</c>, <c>{2}</c> placeholders
-    /// substituted at generator time) or a built-in default message.
-    /// <c>{0}</c> resolves to the <c>[SectionName:PropertyName]</c> prefix,
-    /// <c>{1}</c> to <paramref name="arg1"/>, and <c>{2}</c> to <paramref name="arg2"/>.
+    /// Emits a <c>failures.Add(...)</c> line using either the user's custom
+    /// <c>ErrorMessage</c> or a built-in default message. Both are expected to
+    /// contain a <c>{0}</c> marker for the display-name prefix and may contain
+    /// <c>{1}</c> / <c>{2}</c> markers for caller-supplied numeric arguments.
+    /// <para>
+    /// <c>{1}</c> and <c>{2}</c> substitute at generator time because they
+    /// resolve to numeric literals.
+    /// </para>
+    /// <para>
+    /// <c>{0}</c> substitutes at <em>runtime</em>, resolving to
+    /// <c>"[" + path + ":PropertyName]"</c> — where <c>path</c> is the full
+    /// configuration path passed into the enclosing <c>Validate</c> call. We
+    /// split the template on <c>{0}</c> at generator time and emit a string
+    /// concat so the runtime prefix is always correct regardless of nesting
+    /// depth (e.g. <c>[Api:Endpoints:1:Url]</c> instead of
+    /// <c>[__endpoint__:Url]</c>).
+    /// </para>
     /// </summary>
     private static void EmitFailureMessage(
         IndentedTextWriter writer,
-        ConfigSectionModel model,
         ConfigPropertyModel prop,
         DataAnnotationModel ann,
         string defaultMessage,
         string? arg1 = null,
         string? arg2 = null)
     {
-        string message;
+        // Prefer the user-supplied ErrorMessage if present; otherwise use the
+        // default template built by the calling Emit*Check helper.
+        var template = ann.ErrorMessage ?? defaultMessage;
 
-        if (ann.ErrorMessage is null)
+        // Substitute {1} and {2} at generator time so the runtime code stays
+        // a static concat of literal segments + one `path` expression.
+        template = template
+            .Replace("{1}", arg1 ?? string.Empty)
+            .Replace("{2}", arg2 ?? string.Empty);
+
+        // Split on {0} — each gap between segments becomes a runtime-built
+        // display-name concat. Most messages have exactly one {0} at the front;
+        // the loop below tolerates zero, one, or many markers.
+        var parts = template.Split(FailureMessageSplitSeparator, System.StringSplitOptions.None);
+
+        writer.Write("failures.Add(");
+        var emittedAny = false;
+
+        for (int i = 0; i < parts.Length; i++)
         {
-            message = defaultMessage;
-        }
-        else
-        {
-            // The user-supplied ErrorMessage may contain {0}, {1}, {2}
-            // placeholders. We substitute them at generator time so the
-            // runtime code is a plain string literal with no allocations.
-            //   {0} → "[SectionName:PropertyName]" (the display name)
-            //   {1} → first arg (min for [Range], etc.)
-            //   {2} → second arg (max for [Range], etc.)
-            var displayName = "[" + Escape(model.SectionName) + ":" + prop.Name + "]";
-            message = ann.ErrorMessage
-                .Replace("{0}", displayName)
-                .Replace("{1}", arg1 ?? string.Empty)
-                .Replace("{2}", arg2 ?? string.Empty);
+            // Emit the runtime display-name between every pair of literal
+            // segments (and thus at every `{0}` marker).
+            if (i > 0)
+            {
+                if (emittedAny)
+                {
+                    writer.Write(" + ");
+                }
+
+                writer.Write("\"[\" + path + \":");
+                writer.Write(prop.Name);
+                writer.Write("]\"");
+                emittedAny = true;
+            }
+
+            // Skip zero-length literal segments — they contribute nothing and
+            // would otherwise emit a stray `""` that hurts readability.
+            if (parts[i].Length == 0)
+            {
+                continue;
+            }
+
+            if (emittedAny)
+            {
+                writer.Write(" + ");
+            }
+
+            writer.Write('"');
+            writer.Write(Escape(parts[i]));
+            writer.Write('"');
+            emittedAny = true;
         }
 
-        writer.Write("failures.Add(\"");
-        writer.Write(Escape(message));
-        writer.WriteLine("\");");
+        // Defensive: if somehow the template was empty and no marker fired,
+        // emit an empty string literal so we never produce `failures.Add();`.
+        if (!emittedAny)
+        {
+            writer.Write("\"\"");
+        }
+
+        writer.WriteLine(");");
     }
 
     /// <summary>Emits <c>if (options.X is not null &amp;&amp; (options.X.Length &lt; min || options.X.Length &gt; max))</c></summary>
@@ -1558,8 +1610,7 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMsg = $"[{model.SectionName}:{prop.Name}] must have length between {minLen} and {maxLen.Value}.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMsg,
+        EmitFailureMessage(writer, prop, ann, "{0} must have length between {1} and {2}.",
             arg1: minLen.ToString(System.Globalization.CultureInfo.InvariantCulture),
             arg2: maxLen.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
         writer.Indent--;
@@ -1588,8 +1639,7 @@ internal static class SourceEmitter
         writer.WriteLine(")");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMinMsg = $"[{model.SectionName}:{prop.Name}] must have minimum length {n}.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMinMsg,
+        EmitFailureMessage(writer, prop, ann, "{0} must have minimum length {1}.",
             arg1: n.ToString(System.Globalization.CultureInfo.InvariantCulture));
         writer.Indent--;
         writer.WriteLine("}");
@@ -1617,8 +1667,7 @@ internal static class SourceEmitter
         writer.WriteLine(")");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMaxMsg = $"[{model.SectionName}:{prop.Name}] must have maximum length {n}.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMaxMsg,
+        EmitFailureMessage(writer, prop, ann, "{0} must have maximum length {1}.",
             arg1: n.ToString(System.Globalization.CultureInfo.InvariantCulture));
         writer.Indent--;
         writer.WriteLine("}");
@@ -1636,8 +1685,7 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMsg = $"[{model.SectionName}:{prop.Name}] does not match the required pattern.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMsg);
+        EmitFailureMessage(writer, prop, ann, "{0} does not match the required pattern.");
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1652,8 +1700,7 @@ internal static class SourceEmitter
         writer.WriteLine(", global::System.UriKind.Absolute, out _))");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMsg = $"[{model.SectionName}:{prop.Name}] is not a valid absolute URL.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMsg);
+        EmitFailureMessage(writer, prop, ann, "{0} is not a valid absolute URL.");
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1670,8 +1717,7 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        var defaultMsg = $"[{model.SectionName}:{prop.Name}] is not a valid email address.";
-        EmitFailureMessage(writer, model, prop, ann, defaultMsg);
+        EmitFailureMessage(writer, prop, ann, "{0} is not a valid email address.");
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1700,8 +1746,7 @@ internal static class SourceEmitter
         writer.WriteLine("{");
         writer.Indent++;
         var allowedList = string.Join(", ", ann.ValuesArg.AsArray());
-        var defaultAllowedMsg = $"[{model.SectionName}:{prop.Name}] must be one of: {allowedList}.";
-        EmitFailureMessage(writer, model, prop, ann, defaultAllowedMsg, arg1: allowedList);
+        EmitFailureMessage(writer, prop, ann, "{0} must be one of: {1}.", arg1: allowedList);
         writer.Indent--;
         writer.WriteLine("}");
     }
@@ -1730,8 +1775,7 @@ internal static class SourceEmitter
         writer.WriteLine("{");
         writer.Indent++;
         var deniedList = string.Join(", ", ann.ValuesArg.AsArray());
-        var defaultDeniedMsg = $"[{model.SectionName}:{prop.Name}] must not be one of: {deniedList}.";
-        EmitFailureMessage(writer, model, prop, ann, defaultDeniedMsg, arg1: deniedList);
+        EmitFailureMessage(writer, prop, ann, "{0} must not be one of: {1}.", arg1: deniedList);
         writer.Indent--;
         writer.WriteLine("}");
     }
