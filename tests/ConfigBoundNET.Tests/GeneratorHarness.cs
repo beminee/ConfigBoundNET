@@ -100,6 +100,53 @@ internal static class GeneratorHarness
     }
 
     /// <summary>
+    /// Builds a <see cref="CSharpCompilation"/> and a <see cref="GeneratorDriver"/>
+    /// with incremental step tracking enabled. The caller can then re-invoke the
+    /// driver against a modified compilation and inspect
+    /// <c>GetRunResult().Results[0].TrackedSteps</c> to assert whether the cache
+    /// was hit or invalidated.
+    /// </summary>
+    /// <remarks>
+    /// Step tracking is off by default because it has a nontrivial bookkeeping
+    /// cost per run; only the cache/perf tests in <c>GeneratorCacheTests</c>
+    /// need it, so we expose it behind a separate factory instead of flipping
+    /// the default for every test.
+    /// </remarks>
+    /// <param name="source">Initial C# source to seed the compilation with.</param>
+    /// <returns>A tuple of the driver (already run once) and the initial compilation.</returns>
+    public static (GeneratorDriver Driver, CSharpCompilation Compilation) CreateDriverWithTracking(string source)
+    {
+        var parseOptions = new CSharpParseOptions(LanguageVersion.Latest);
+        var syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
+
+        var compilation = CSharpCompilation.Create(
+            assemblyName: "ConfigBoundNET.Tests.Cache",
+            syntaxTrees: new[] { syntaxTree },
+            references: References,
+            options: new CSharpCompilationOptions(
+                OutputKind.DynamicallyLinkedLibrary,
+                nullableContextOptions: NullableContextOptions.Enable));
+
+        // Declared as GeneratorDriver (base class) because RunGenerators
+        // returns GeneratorDriver, not CSharpGeneratorDriver, so we cannot
+        // re-assign through a CSharpGeneratorDriver-typed variable.
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(
+            generators: new[] { new ConfigBoundGenerator().AsSourceGenerator() },
+            additionalTexts: ImmutableArray<AdditionalText>.Empty,
+            parseOptions: parseOptions,
+            optionsProvider: null,
+            driverOptions: new GeneratorDriverOptions(
+                IncrementalGeneratorOutputKind.None,
+                trackIncrementalGeneratorSteps: true));
+
+        // First run seeds the cache. Tests then modify `compilation` and
+        // invoke `RunGenerators` on the returned driver again.
+        driver = driver.RunGenerators(compilation);
+
+        return (driver, compilation);
+    }
+
+    /// <summary>
     /// Convenience: returns the generated source text for the single per-type
     /// output tree produced by the generator run (i.e. the emitted validator
     /// + binder file for the user's <c>[ConfigSection]</c> type).

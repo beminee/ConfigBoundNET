@@ -74,11 +74,17 @@ public sealed class ConfigBoundGenerator : IIncrementalGenerator
         //    ForAttributeWithMetadataName API does the heavy lifting — it
         //    uses Roslyn's indexed attribute lookup rather than a whole-syntax
         //    walk, which is the key to keeping incremental builds fast.
+        //
+        //    WithTrackingName labels this step so the cache/perf tests in
+        //    GeneratorCacheTests can look it up via
+        //    GeneratorDriverRunResult.TrackedSteps[TrackingNames.BuildResults]
+        //    and assert that unrelated edits don't bust the cache.
         var buildResults = context.SyntaxProvider
             .ForAttributeWithMetadataName(
                 fullyQualifiedMetadataName: AttributeSource.FullyQualifiedMetadataName,
                 predicate: static (node, _) => node is TypeDeclarationSyntax,
-                transform: static (ctx, ct) => ModelBuilder.Build(ctx, ct));
+                transform: static (ctx, ct) => ModelBuilder.Build(ctx, ct))
+            .WithTrackingName(TrackingNames.BuildResults);
 
         // ── Step 3: produce diagnostics and source for every result.
         context.RegisterSourceOutput(buildResults, static (productionContext, result) =>

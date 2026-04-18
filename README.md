@@ -82,7 +82,7 @@ ConfigBoundNET ships as a single analyzer package. There is no runtime dependenc
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="ConfigBoundNET" Version="1.0.0" />
+  <PackageReference Include="ConfigBoundNET" Version="2.0.1" />
 </ItemGroup>
 ```
 
@@ -385,7 +385,7 @@ ConfigBoundNET/
 # Restore + build the whole solution (generator, tests, AOT smoke, example).
 dotnet build ConfigBoundNET.sln
 
-# 82 unit + integration + snapshot tests.
+# 87 unit + integration + snapshot + cache tests.
 dotnet test  tests/ConfigBoundNET.Tests/ConfigBoundNET.Tests.csproj
 ```
 
@@ -434,32 +434,27 @@ Try editing `appsettings.json` to remove the `Conn` value and re-run — the hos
 
 ## Roadmap
 
-ConfigBoundNET is currently at **v1.0.0**. The pieces below are tracked toward next major versions.
+ConfigBoundNET is at **v2.0.0** and feature-complete for its core remit: declare a `partial record`, get an AOT-safe binder, validator, and one-line DI extension with build-time diagnostics. The items below are candidate extensions, ordered by value-to-effort ratio — not commitments.
 
-### Tier 1 — needed before 1.0
+### Planned
 
-- [x] **DataAnnotations validation.** ✅ The generator scans for `[Range]`, `[StringLength]`, `[MinLength]`, `[MaxLength]`, `[RegularExpression]`, `[Url]`, `[EmailAddress]`, `[Required]`, `[AllowedValues]`, and `[DeniedValues]` and emits explicit, reflection-free validation checks. Misapplied annotations (e.g. `[Range]` on a string) are caught at build time with CB0006–CB0009 diagnostics. Regex patterns are validated at compile time. See the DataAnnotations section above.
-- [x] **Reflection-free binding (AOT support).** ✅ The generator emits an explicit `(IConfigurationSection)` constructor on every annotated type and registers a `ConfigBoundOptionsFactory<T>` shim that calls it, replacing `ConfigurationBinder.Bind` entirely. The pipeline is now trim- and Native-AOT-friendly for the supported type set listed above.
-- [x] **AOT smoke-test workflow.** ✅ [`tests/ConfigBoundNET.AotTests`](tests/ConfigBoundNET.AotTests/) is a console app with `<IsAotCompatible>true</IsAotCompatible>` that exercises every `BindingStrategy` and asserts on the bound values. [`.github/workflows/aot.yml`](.github/workflows/aot.yml) runs the static analyzer build on every push and a full `dotnet publish` Native AOT compile on Linux x64 right after, executing the resulting native binary to confirm the round-trip.
-- [x] **Custom validation hook.** ✅ Every annotated type gets a `partial void ValidateCustom(List<string> failures)` declaration. Implement it on your config type to add cross-field rules; leave it unimplemented for zero cost. Called after all generated checks. See the custom validation hook section above.
-- [x] **CodeFix providers.** ✅ Five one-click IDE lightbulb fixes: CB0001 ("Add `partial` modifier"), CB0002 ("Use `{Inferred}` as section name" — strips `Config`/`Options`/`Settings`/`Configuration` suffix), CB0003 ("Move type to namespace scope"), CB0005 ("Change to class"), CB0009 ("Remove redundant `[Required]`").
-- [x] **CI workflow.** ✅ [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push/PR: restore, build, test (53 tests), AOT smoke, example run, pack `.nupkg` (uploaded as artifact). On `v*` tag pushes, a second job publishes to NuGet.org and creates a GitHub Release with auto-generated release notes. Version is derived from the tag name (`v0.2.0` -> `Version=0.2.0`).
-
-### Tier 2 — quality-of-life
-
-- [x] **`[ConfigSection]` with no argument.** ✅ `[ConfigSection] partial record DbConfig` infers `"Db"` by stripping `Config`/`Options`/`Settings`/`Configuration` suffixes. Explicit `[ConfigSection("")]` still errors with CB0002 (the code fix offers to fill in the inferred name).
-- [x] **Nested config validation.** ✅ The parent's `Validator.Validate()` now recursively calls each nested `[ConfigSection]` type's own `Validator`, merging any failures into the parent's result. Required-field checks, DataAnnotations, and custom hooks on nested types all fire as part of the parent's validation pass.
-- [x] **Collection support.** ✅ `T[]`, `List<T>`, `IList<T>`, `ICollection<T>`, `IEnumerable<T>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>`, `Dictionary<string, T>`, `IDictionary<string, T>`, and `IReadOnlyDictionary<string, T>` are all supported. Elements can be any scalar type. Absent sections preserve user-declared defaults. `[MinLength]`/`[MaxLength]` work on collections (checking `.Count`/`.Length`). CB0007 relaxed to allow length attributes on collections.
-- [x] **Snapshot tests with `Verify.SourceGenerators`.** ✅ 14 scenarios pinning the exact generated output via 44 `.verified.cs` files under `tests/ConfigBoundNET.Tests/Snapshots/`. Covers: basic record, parameterless attribute, class (non-record), global namespace, all primitive types, enums, nullable/optional, nested config, Range + StringLength, RegularExpression, Url + EmailAddress, MinLength + MaxLength, multiple annotations on one property, and the empty-type ValidateCustom hook. Any emitter change surfaces as a diff that must be explicitly accepted.
-- [ ] **Generator perf test** asserting incremental cache hits via `GeneratorDriver.GetRunResult().Results[0].TrackedSteps` — protects against accidentally putting non-equatable types in the pipeline.
+- [ ] **`List<[ConfigSection]>` — complex nested collections.** Today a `List<EndpointConfig>` where `EndpointConfig` is itself `[ConfigSection]`-annotated falls under CB0010. Each array element is already an `IConfigurationSection`, so the emitter can iterate `section.GetChildren()` and call `new EndpointConfig(child)` per element. Closes the last honest gap in the binding story.
+- [ ] **JSON schema emission for `appsettings.json`.** Emit a `.schema.json` at build time from the `[ConfigSection]` graph (types, required-ness, `[Range]` bounds, enum values, regex patterns). Wired via `"$schema"` in `appsettings.json`, users get IntelliSense and red squiggles on config values — no runtime cost, enormous DX win.
+- [ ] **`[Sensitive]` attribute + redacted `ToString`.** Emit an override that prints `Conn = ***` for marked properties so `logger.LogInformation("{@Config}", opts)` stops leaking secrets. Today users either write this by hand or accept the footgun.
+- [ ] **Analyzer for stringly-typed config access.** When a `[ConfigSection("Db")]` exists, flag `configuration["Db:Conn"]` / `configuration.GetValue<T>("Db:…")` and suggest injecting `IOptions<DbConfig>` instead. Turns the generator into a migration tool for existing codebases.
+- [ ] **`AddConfigBoundSections(IConfiguration)` aggregate registration.** Generate one assembly-wide extension that calls every `AddXxxConfig` in the assembly, so projects with 20 config sections get a single line in `Program.cs`.
+- [ ] **Propagate XML doc comments.** Forward `///` summaries from the user's config properties onto the generated `Add{Name}Config` method and any public generated members, so IntelliSense keeps working.
+- [ ] **`partial void OnBound(IConfigurationSection section)` hook.** Called after construction and before validation; lets users derive computed properties or normalize values without touching the generated constructor. Same zero-cost pattern as `ValidateCustom`.
 - [ ] **SourceLink + deterministic builds + `.snupkg`** so users get source debugging on nuget.org.
 - [ ] **`CHANGELOG.md`** wired into the package via `PackageReleaseNotes`.
 
-### Out of scope (probably)
+### Out of scope
 
-- **Async validation.** `IValidateOptions<T>` is sync; async checks (e.g. probing a DB connection) belong in a hosted startup task.
+- **Async validation.** `IValidateOptions<T>` is sync; async checks (e.g. probing a DB connection) belong in a hosted startup task, not the validator.
 - **Custom configuration providers / new sources.** Orthogonal concern — ConfigBoundNET binds whatever `IConfiguration` already exposes.
-- **Struct support.** `record struct` configs are an anti-pattern with `IOptions<T>` (the framework hands out copies). Already rejected by CB0005; intentionally left that way.
+- **Struct support.** `record struct` configs are an anti-pattern with `IOptions<T>` (the framework hands out copies). Rejected by CB0005; intentionally left that way.
+- **Immutable collection types** (`ImmutableArray<T>`, `FrozenSet<T>`). Would require shipping `System.Collections.Immutable` as a transitive dependency to every consumer. Reconsider if demand appears.
+- **Custom binding plugins.** A user-extensible type-handler registry would force reflection back into the pipeline and defeat the AOT guarantee.
 
 ---
 
