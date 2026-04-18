@@ -125,7 +125,24 @@ internal static class SourceEmitter
         //    regex is compiled once, not on every Validate call.
         WriteRegexFields(writer, model);
 
+        // ── IValidateOptions<T> entry point. Delegates to the path-aware
+        //    overload so root validation still reads "[SectionName:Prop]"
+        //    in failure messages, preserving backwards compatibility.
         writer.Write("public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, ");
+        writer.Write(model.TypeName);
+        writer.WriteLine(" options)");
+        writer.Indent++;
+        writer.WriteLine("=> Validate(name, SectionName, options);");
+        writer.Indent--;
+        writer.WriteLine();
+
+        // ── Path-aware overload invoked by parent validators during nested /
+        //    nested-collection recursion. `path` is the full IConfiguration
+        //    path to *this* options instance (e.g. "Api:Endpoints:1"). All
+        //    failure messages emitted below use `path` as the prefix, so the
+        //    same child type produces correctly-scoped messages regardless of
+        //    where it sits in the config tree.
+        writer.Write("public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, string path, ");
         writer.Write(model.TypeName);
         writer.WriteLine(" options)");
         writer.WriteLine("{");
@@ -161,9 +178,7 @@ internal static class SourceEmitter
                 writer.WriteLine("))");
                 writer.WriteLine("{");
                 writer.Indent++;
-                writer.Write("failures.Add(\"[");
-                writer.Write(Escape(model.SectionName));
-                writer.Write(':');
+                writer.Write("failures.Add(\"[\" + path + \":");
                 writer.Write(prop.Name);
                 writer.WriteLine("] is required but was null, empty, or whitespace.\");");
                 writer.Indent--;
@@ -176,9 +191,7 @@ internal static class SourceEmitter
                 writer.WriteLine(" is null)");
                 writer.WriteLine("{");
                 writer.Indent++;
-                writer.Write("failures.Add(\"[");
-                writer.Write(Escape(model.SectionName));
-                writer.Write(':');
+                writer.Write("failures.Add(\"[\" + path + \":");
                 writer.Write(prop.Name);
                 writer.WriteLine("] is required but was null.\");");
                 writer.Indent--;
