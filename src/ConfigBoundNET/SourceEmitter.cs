@@ -862,19 +862,18 @@ internal static class SourceEmitter
     /// <summary>
     /// Emits validation recursion over every element of a
     /// <see cref="BindingStrategy.NestedConfigCollection"/> property. Each
-    /// non-null element is validated via its own generated
-    /// <c>Validator</c>, and failures are merged into the parent's
-    /// <c>failures</c> list. The index is appended to the IOptions named-options
-    /// key so a failing element is attributable (<c>SomeName:Endpoints:0</c>);
-    /// the element's own failure messages already carry the child's
-    /// <c>[SectionName:Prop]</c> prefix.
+    /// non-null element is validated via its own generated <c>Validator</c>'s
+    /// path-aware overload, receiving the full config path (<c>path + ":" +
+    /// PropName + ":" + idx</c>, e.g. <c>"Api:Endpoints:1"</c>). Failures are
+    /// merged into the parent's list with the element's index baked into
+    /// every message — no more <c>[__endpoint__:Url]</c>.
     /// </summary>
     private static void WriteNestedCollectionValidation(IndentedTextWriter writer, ConfigPropertyModel prop)
     {
         var indexVar = LocalName(prop.Name, "Idx");
         var itemVar = LocalName(prop.Name, "Item");
         var resultVar = LocalName(prop.Name, "ItemResult");
-        var nameVar = LocalName(prop.Name, "ItemName");
+        var pathVar = LocalName(prop.Name, "ItemPath");
 
         writer.Write("if (options.");
         writer.Write(prop.Name);
@@ -900,17 +899,11 @@ internal static class SourceEmitter
         writer.WriteLine("{");
         writer.Indent++;
 
-        // Build the named-options key as either "<Prop>:<idx>" (when the
-        // caller passed null/default) or "<name>:<Prop>:<idx>". The index
-        // lets a consumer attribute a failure to a specific element when the
-        // same options type is registered under multiple names.
+        // Build the config path for this element: path + ":" + PropName + ":" + idx.
+        // e.g. parent path "Api" + prop "Endpoints" + idx 1 -> "Api:Endpoints:1".
         writer.Write("var ");
-        writer.Write(nameVar);
-        writer.Write(" = name is null ? \"");
-        writer.Write(prop.Name);
-        writer.Write(":\" + ");
-        writer.Write(indexVar);
-        writer.Write(".ToString(global::System.Globalization.CultureInfo.InvariantCulture) : name + \":");
+        writer.Write(pathVar);
+        writer.Write(" = path + \":");
         writer.Write(prop.Name);
         writer.Write(":\" + ");
         writer.Write(indexVar);
@@ -920,8 +913,8 @@ internal static class SourceEmitter
         writer.Write(resultVar);
         writer.Write(" = new ");
         writer.Write(prop.NestedTypeFullyQualifiedName);
-        writer.Write(".Validator().Validate(");
-        writer.Write(nameVar);
+        writer.Write(".Validator().Validate(name, ");
+        writer.Write(pathVar);
         writer.Write(", ");
         writer.Write(itemVar);
         writer.WriteLine(");");
