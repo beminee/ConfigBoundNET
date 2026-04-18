@@ -1126,56 +1126,17 @@ internal static class SourceEmitter
         var containerValueType = prop.NestedTypeFullyQualifiedName!;
         var constructableValueType = StripNullableAnnotation(containerValueType);
 
-        var sectionVar = LocalName(prop.Name, "Section");
-        var dictVar = LocalName(prop.Name, "Dict");
-        var childVar = LocalName(prop.Name, "Child");
-
-        writer.Write("var ");
-        writer.Write(sectionVar);
-        writer.Write(" = section.GetSection(\"");
-        writer.Write(prop.Name);
-        writer.WriteLine("\");");
-
-        writer.Write("var ");
-        writer.Write(dictVar);
-        writer.Write(" = new global::System.Collections.Generic.Dictionary<string, ");
-        writer.Write(containerValueType);
-        writer.WriteLine(">();");
-
-        writer.Write("foreach (var ");
-        writer.Write(childVar);
-        writer.Write(" in ");
-        writer.Write(sectionVar);
-        writer.WriteLine(".GetChildren())");
-        writer.WriteLine("{");
-        writer.Indent++;
-
-        writer.Write(dictVar);
-        writer.Write("[");
-        writer.Write(childVar);
-        writer.Write(".Key] = new ");
-        writer.Write(constructableValueType);
-        writer.Write('(');
-        writer.Write(childVar);
-        writer.WriteLine(");");
-
-        writer.Indent--;
-        writer.WriteLine("}");
-
-        // Preserve user-declared default when the section is absent — matches
-        // the scalar-dictionary and nested-collection contracts.
-        writer.Write("if (");
-        writer.Write(dictVar);
-        writer.WriteLine(".Count > 0)");
-        writer.WriteLine("{");
-        writer.Indent++;
-        writer.Write("this.");
-        writer.Write(prop.Name);
-        writer.Write(" = ");
-        writer.Write(dictVar);
-        writer.WriteLine(";");
-        writer.Indent--;
-        writer.WriteLine("}");
+        EmitDictionaryAssignmentCore(writer, prop, containerValueType, (childVar, dictVar) =>
+        {
+            writer.Write(dictVar);
+            writer.Write("[");
+            writer.Write(childVar);
+            writer.Write(".Key] = new ");
+            writer.Write(constructableValueType);
+            writer.Write('(');
+            writer.Write(childVar);
+            writer.WriteLine(");");
+        });
     }
 
     /// <summary>
@@ -1241,15 +1202,23 @@ internal static class SourceEmitter
     }
 
     /// <summary>
-    /// Emits binding code for <c>Dictionary&lt;string, T&gt;</c> and its interfaces.
+    /// Shared skeleton for every dictionary-binding strategy: open the target
+    /// section, allocate a temporary <see cref="System.Collections.Generic.Dictionary{TKey, TValue}"/>
+    /// keyed by <c>string</c>, iterate <c>GetChildren()</c>, and assign the
+    /// result — preserving user-declared defaults when the section is absent.
+    /// Callers supply <paramref name="emitPerChild"/> to produce the
+    /// per-child body (scalar parse + keyed assign, or complex constructor
+    /// invocation).
     /// </summary>
-    private static void EmitDictionaryAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    private static void EmitDictionaryAssignmentCore(
+        IndentedTextWriter writer,
+        ConfigPropertyModel prop,
+        string valueTypeName,
+        System.Action<string, string> emitPerChild)
     {
         var sectionVar = LocalName(prop.Name, "Section");
         var dictVar = LocalName(prop.Name, "Dict");
         var childVar = LocalName(prop.Name, "Child");
-        var elementKeyword = prop.CollectionElementKeyword ?? "string";
-        var valueTypeName = GetElementTypeName(prop.CollectionElementStrategy, elementKeyword);
 
         writer.Write("var ");
         writer.Write(sectionVar);
@@ -1271,11 +1240,13 @@ internal static class SourceEmitter
         writer.WriteLine("{");
         writer.Indent++;
 
-        EmitDictElementParse(writer, prop.CollectionElementStrategy, elementKeyword, childVar, dictVar);
+        emitPerChild(childVar, dictVar);
 
         writer.Indent--;
         writer.WriteLine("}");
 
+        // Preserve user-declared defaults when the section is absent — matches
+        // the list-collection contract.
         writer.Write("if (");
         writer.Write(dictVar);
         writer.WriteLine(".Count > 0)");
@@ -1288,6 +1259,19 @@ internal static class SourceEmitter
         writer.WriteLine(";");
         writer.Indent--;
         writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Emits binding code for <c>Dictionary&lt;string, T&gt;</c> and its interfaces
+    /// where <c>T</c> is a scalar.
+    /// </summary>
+    private static void EmitDictionaryAssignment(IndentedTextWriter writer, ConfigPropertyModel prop)
+    {
+        var elementKeyword = prop.CollectionElementKeyword ?? "string";
+        var valueTypeName = GetElementTypeName(prop.CollectionElementStrategy, elementKeyword);
+
+        EmitDictionaryAssignmentCore(writer, prop, valueTypeName, (childVar, dictVar) =>
+            EmitDictElementParse(writer, prop.CollectionElementStrategy, elementKeyword, childVar, dictVar));
     }
 
     /// <summary>
