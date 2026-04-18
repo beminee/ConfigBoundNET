@@ -236,14 +236,18 @@ internal static class SourceEmitter
             }
         }
 
-        // ── Custom validation hook: call the partial method on the options
-        //    instance. If the user has not implemented it, the C# compiler
-        //    removes the call site entirely (zero cost). If they have, their
-        //    code runs after all generated checks so it can inspect the
-        //    already-bound, already-null-checked state.
+        // ── Custom validation hooks. Both partial methods are called
+        //    unconditionally; the C# compiler removes the call site for any
+        //    the user didn't implement, so unimplemented hooks cost nothing
+        //    at runtime.
+        //    - The single-arg overload preserves backwards compat with hooks
+        //      written before the path-aware variant existed.
+        //    - The two-arg overload hands the user the full runtime path so
+        //      they can produce messages like "[Api:Endpoints:1] ..." that
+        //      stay correct at any nesting depth.
         writer.WriteLine();
-        writer.Write("options.ValidateCustom(failures);");
-        writer.WriteLine();
+        writer.WriteLine("options.ValidateCustom(failures);");
+        writer.WriteLine("options.ValidateCustom(failures, path);");
 
         writer.WriteLine();
         writer.WriteLine("return failures.Count > 0");
@@ -258,9 +262,10 @@ internal static class SourceEmitter
         writer.Indent--;
         writer.WriteLine("}");
 
-        // ── Partial method declaration for the custom validation hook.
-        //    Lives on the outer partial type (not on the sealed Validator)
-        //    so the user can implement it in their own partial declaration.
+        // ── Partial method declarations for the custom validation hooks.
+        //    Live on the outer partial type (not on the sealed Validator) so
+        //    the user can implement either (or both) in their own partial
+        //    declaration.
         writer.WriteLine();
         writer.WriteLine("/// <summary>");
         writer.WriteLine("/// Optional hook for custom cross-field validation. Implement this");
@@ -270,6 +275,18 @@ internal static class SourceEmitter
         writer.WriteLine("/// </summary>");
         writer.WriteLine("/// <param name=\"failures\">Mutable list of failure messages. Add to it to report errors.</param>");
         writer.WriteLine("partial void ValidateCustom(global::System.Collections.Generic.List<string> failures);");
+
+        writer.WriteLine();
+        writer.WriteLine("/// <summary>");
+        writer.WriteLine("/// Path-aware overload of the custom validation hook. Implement this");
+        writer.WriteLine("/// partial method instead of (or alongside) the single-argument form");
+        writer.WriteLine("/// when you want to include the full runtime configuration path in");
+        writer.WriteLine("/// your failure messages — useful for types that can be used as");
+        writer.WriteLine("/// nested or element configs, where the path differs per usage site.");
+        writer.WriteLine("/// </summary>");
+        writer.WriteLine("/// <param name=\"failures\">Mutable list of failure messages. Add to it to report errors.</param>");
+        writer.WriteLine("/// <param name=\"path\">Full configuration path to this options instance, e.g. <c>\"Api:Endpoints:1\"</c>.</param>");
+        writer.WriteLine("partial void ValidateCustom(global::System.Collections.Generic.List<string> failures, string path);");
 
         writer.Indent--;
         writer.WriteLine("}");
