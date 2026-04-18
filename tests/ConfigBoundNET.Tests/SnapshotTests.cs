@@ -442,6 +442,38 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public Task NestedConfig_list_with_nullable_element()
+    {
+        // Pins the codegen for List<EndpointConfig?>. The emitted container
+        // preserves the ? annotation (so assignment type-checks under strict
+        // nullable) while the constructor invocation strips it (since
+        // `new Foo?(x)` isn't valid C#). The validator null-guards each
+        // element defensively even though the binder never produces nulls.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.Collections.Generic;
+
+            #nullable enable
+
+            namespace MyApp;
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public List<EndpointConfig?> Endpoints { get; init; } = new();
+            }
+
+            [ConfigSection("__endpoint__")]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
+    [Fact]
     public Task NestedConfig_list_with_inner_annotations()
     {
         // Inner element carries DataAnnotations. The parent's Validator.Validate

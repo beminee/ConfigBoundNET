@@ -48,6 +48,9 @@ partial record ApiConfig
     public sealed class Validator : global::Microsoft.Extensions.Options.IValidateOptions<ApiConfig>
     {
         public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, ApiConfig options)
+            => Validate(name, SectionName, options);
+        
+        public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, string path, ApiConfig options)
         {
             if (options is null)
             {
@@ -58,11 +61,11 @@ partial record ApiConfig
             
             if (options.Endpoints is null)
             {
-                failures.Add("[Api:Endpoints] is required but was null.");
+                failures.Add("[" + path + ":Endpoints] is required but was null.");
             }
             if (options.Endpoints is not null && options.Endpoints.Count < 1)
             {
-                failures.Add("[Api:Endpoints] must have minimum length 1.");
+                failures.Add("[" + path + ":Endpoints]" + " must have minimum length 1.");
             }
             if (options.Endpoints is not null)
             {
@@ -71,8 +74,8 @@ partial record ApiConfig
                 {
                     if (_cb_EndpointsItem is not null)
                     {
-                        var _cb_EndpointsItemName = name is null ? "Endpoints:" + _cb_EndpointsIdx.ToString(global::System.Globalization.CultureInfo.InvariantCulture) : name + ":Endpoints:" + _cb_EndpointsIdx.ToString(global::System.Globalization.CultureInfo.InvariantCulture);
-                        var _cb_EndpointsItemResult = new global::MyApp.EndpointConfig.Validator().Validate(_cb_EndpointsItemName, _cb_EndpointsItem);
+                        var _cb_EndpointsItemPath = path + ":Endpoints:" + _cb_EndpointsIdx.ToString(global::System.Globalization.CultureInfo.InvariantCulture);
+                        var _cb_EndpointsItemResult = new global::MyApp.EndpointConfig.Validator().Validate(name, _cb_EndpointsItemPath, _cb_EndpointsItem);
                         if (_cb_EndpointsItemResult.Failed)
                         {
                             failures.AddRange(_cb_EndpointsItemResult.Failures);
@@ -83,6 +86,7 @@ partial record ApiConfig
             }
             
             options.ValidateCustom(failures);
+            options.ValidateCustom(failures, path);
             
             return failures.Count > 0
                 ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)
@@ -98,6 +102,17 @@ partial record ApiConfig
     /// </summary>
     /// <param name="failures">Mutable list of failure messages. Add to it to report errors.</param>
     partial void ValidateCustom(global::System.Collections.Generic.List<string> failures);
+    
+    /// <summary>
+    /// Path-aware overload of the custom validation hook. Implement this
+    /// partial method instead of (or alongside) the single-argument form
+    /// when you want to include the full runtime configuration path in
+    /// your failure messages — useful for types that can be used as
+    /// nested or element configs, where the path differs per usage site.
+    /// </summary>
+    /// <param name="failures">Mutable list of failure messages. Add to it to report errors.</param>
+    /// <param name="path">Full configuration path to this options instance, e.g. <c>"Api:Endpoints:1"</c>.</param>
+    partial void ValidateCustom(global::System.Collections.Generic.List<string> failures, string path);
 }
 
 /// <summary>

@@ -49,6 +49,9 @@ partial record ContactConfig
     {
         private static readonly global::System.Text.RegularExpressions.Regex _cb_Regex_Email_AdminEmail = new global::System.Text.RegularExpressions.Regex(@"^[^@\s]+@[^@\s]+\.[^@\s]+$", global::System.Text.RegularExpressions.RegexOptions.Compiled);
         public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, ContactConfig options)
+            => Validate(name, SectionName, options);
+        
+        public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, string path, ContactConfig options)
         {
             if (options is null)
             {
@@ -59,22 +62,23 @@ partial record ContactConfig
             
             if (string.IsNullOrWhiteSpace(options.Website))
             {
-                failures.Add("[Contact:Website] is required but was null, empty, or whitespace.");
+                failures.Add("[" + path + ":Website] is required but was null, empty, or whitespace.");
             }
             if (string.IsNullOrWhiteSpace(options.AdminEmail))
             {
-                failures.Add("[Contact:AdminEmail] is required but was null, empty, or whitespace.");
+                failures.Add("[" + path + ":AdminEmail] is required but was null, empty, or whitespace.");
             }
             if (options.Website is not null && !global::System.Uri.TryCreate(options.Website, global::System.UriKind.Absolute, out _))
             {
-                failures.Add("[Contact:Website] is not a valid absolute URL.");
+                failures.Add("[" + path + ":Website]" + " is not a valid absolute URL.");
             }
             if (options.AdminEmail is not null && !_cb_Regex_Email_AdminEmail.IsMatch(options.AdminEmail))
             {
-                failures.Add("[Contact:AdminEmail] is not a valid email address.");
+                failures.Add("[" + path + ":AdminEmail]" + " is not a valid email address.");
             }
             
             options.ValidateCustom(failures);
+            options.ValidateCustom(failures, path);
             
             return failures.Count > 0
                 ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)
@@ -90,6 +94,17 @@ partial record ContactConfig
     /// </summary>
     /// <param name="failures">Mutable list of failure messages. Add to it to report errors.</param>
     partial void ValidateCustom(global::System.Collections.Generic.List<string> failures);
+    
+    /// <summary>
+    /// Path-aware overload of the custom validation hook. Implement this
+    /// partial method instead of (or alongside) the single-argument form
+    /// when you want to include the full runtime configuration path in
+    /// your failure messages — useful for types that can be used as
+    /// nested or element configs, where the path differs per usage site.
+    /// </summary>
+    /// <param name="failures">Mutable list of failure messages. Add to it to report errors.</param>
+    /// <param name="path">Full configuration path to this options instance, e.g. <c>"Api:Endpoints:1"</c>.</param>
+    partial void ValidateCustom(global::System.Collections.Generic.List<string> failures, string path);
 }
 
 /// <summary>

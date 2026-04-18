@@ -48,6 +48,9 @@ partial record LogConfig
     public sealed class Validator : global::Microsoft.Extensions.Options.IValidateOptions<LogConfig>
     {
         public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, LogConfig options)
+            => Validate(name, SectionName, options);
+        
+        public global::Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, string path, LogConfig options)
         {
             if (options is null)
             {
@@ -58,6 +61,7 @@ partial record LogConfig
             
             
             options.ValidateCustom(failures);
+            options.ValidateCustom(failures, path);
             
             return failures.Count > 0
                 ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)
@@ -73,6 +77,17 @@ partial record LogConfig
     /// </summary>
     /// <param name="failures">Mutable list of failure messages. Add to it to report errors.</param>
     partial void ValidateCustom(global::System.Collections.Generic.List<string> failures);
+    
+    /// <summary>
+    /// Path-aware overload of the custom validation hook. Implement this
+    /// partial method instead of (or alongside) the single-argument form
+    /// when you want to include the full runtime configuration path in
+    /// your failure messages — useful for types that can be used as
+    /// nested or element configs, where the path differs per usage site.
+    /// </summary>
+    /// <param name="failures">Mutable list of failure messages. Add to it to report errors.</param>
+    /// <param name="path">Full configuration path to this options instance, e.g. <c>"Api:Endpoints:1"</c>.</param>
+    partial void ValidateCustom(global::System.Collections.Generic.List<string> failures, string path);
 }
 
 /// <summary>
