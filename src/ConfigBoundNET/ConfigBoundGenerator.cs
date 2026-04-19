@@ -1,5 +1,6 @@
 // Copyright (c) ConfigBoundNET contributors. Licensed under the GPL-3 License.
 
+using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
 using Microsoft.CodeAnalysis;
@@ -109,6 +110,43 @@ public sealed class ConfigBoundGenerator : IIncrementalGenerator
             var source = SourceEmitter.Emit(result.Model);
             productionContext.AddSource(
                 hintName: $"{result.Model.HintName}.ConfigBound.g.cs",
+                sourceText: SourceText.From(source, Encoding.UTF8));
+        });
+
+        // ── Step 4: project every successful model into a minimal
+        //    AggregateEntry (namespace + type name only) and collect them into
+        //    a single ordered array. The aggregate pipeline is deliberately
+        //    isolated from per-type detail so that unrelated edits (e.g.
+        //    adding a [Range] attribute) never re-emit the assembly-wide
+        //    registration file.
+        var aggregateEntries = buildResults
+            .Select(static (result, _) =>
+                result.Model is null
+                    ? null
+                    : new AggregateEntry(result.Model.Namespace, result.Model.TypeName))
+            .Where(static entry => entry is not null)
+            .Select(static (entry, _) => entry!)
+            .WithTrackingName(TrackingNames.AggregateEntries);
+
+        // Collect all entries into a single equatable array and sort them
+        // deterministically (namespace then type name) so the generated file
+        // is byte-stable across runs — snapshot tests rely on this.
+        var aggregateCollected = aggregateEntries
+            .Collect()
+            .Select(static (entries, _) => entries
+                .OrderBy(e => e.Namespace ?? string.Empty, System.StringComparer.Ordinal)
+                .ThenBy(e => e.TypeName, System.StringComparer.Ordinal)
+                .ToImmutableArray());
+
+        // ── Step 5: emit one AddConfigBoundSections extension per compilation.
+        //    Runs even when the array is empty — the method is then emitted
+        //    with an empty body so callers can always write
+        //    `services.AddConfigBoundSections(config)` without conditionals.
+        context.RegisterSourceOutput(aggregateCollected, static (productionContext, entries) =>
+        {
+            var source = SourceEmitter.EmitAggregateRegistration(entries);
+            productionContext.AddSource(
+                hintName: "ConfigBoundNET.AggregateRegistration.g.cs",
                 sourceText: SourceText.From(source, Encoding.UTF8));
         });
     }
