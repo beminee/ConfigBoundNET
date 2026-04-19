@@ -58,27 +58,27 @@ partial record TestConfig
                 return global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail("TestConfig instance was null.");
             }
             
-            var failures = new global::System.Collections.Generic.List<string>();
+            global::System.Collections.Generic.List<string>? failures = null;
             
             if (string.IsNullOrWhiteSpace(options.Endpoint))
             {
-                failures.Add("[" + path + ":Endpoint] is required but was null, empty, or whitespace.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("[" + path + ":Endpoint] is required but was null, empty, or whitespace.");
             }
             if (options.Port < 1 || options.Port > 65535)
             {
-                failures.Add("Port " + "[" + path + ":Port]" + " must be between 1 and 65535.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("Port " + "[" + path + ":Port]" + " must be between 1 and 65535.");
             }
             if (options.Endpoint is not null && !_cb_Regex_Endpoint.IsMatch(options.Endpoint))
             {
-                failures.Add("Must be an http(s) URL.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("Must be an http(s) URL.");
             }
             
-            options.ValidateCustom(failures);
-            options.ValidateCustom(failures, path);
+            options.ValidateCustom((failures ??= new global::System.Collections.Generic.List<string>()));
+            options.ValidateCustom((failures ??= new global::System.Collections.Generic.List<string>()), path);
             
-            return failures.Count > 0
-                ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)
-                : global::Microsoft.Extensions.Options.ValidateOptionsResult.Success;
+            return failures is null || failures.Count == 0
+                ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Success
+                : global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures);
         }
     }
     

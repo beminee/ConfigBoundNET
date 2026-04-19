@@ -57,15 +57,15 @@ partial record RetryPolicy
                 return global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail("RetryPolicy instance was null.");
             }
             
-            var failures = new global::System.Collections.Generic.List<string>();
+            global::System.Collections.Generic.List<string>? failures = null;
             
             
-            options.ValidateCustom(failures);
-            options.ValidateCustom(failures, path);
+            options.ValidateCustom((failures ??= new global::System.Collections.Generic.List<string>()));
+            options.ValidateCustom((failures ??= new global::System.Collections.Generic.List<string>()), path);
             
-            return failures.Count > 0
-                ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)
-                : global::Microsoft.Extensions.Options.ValidateOptionsResult.Success;
+            return failures is null || failures.Count == 0
+                ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Success
+                : global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures);
         }
     }
     

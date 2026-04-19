@@ -57,31 +57,31 @@ partial record DbConfig
                 return global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail("DbConfig instance was null.");
             }
             
-            var failures = new global::System.Collections.Generic.List<string>();
+            global::System.Collections.Generic.List<string>? failures = null;
             
             if (string.IsNullOrWhiteSpace(options.Conn))
             {
-                failures.Add("[" + path + ":Conn] is required but was null, empty, or whitespace.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("[" + path + ":Conn] is required but was null, empty, or whitespace.");
             }
             if (options.Retry is null)
             {
-                failures.Add("[" + path + ":Retry] is required but was null.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("[" + path + ":Retry] is required but was null.");
             }
             if (options.Retry is not null)
             {
                 var _cb_RetryResult = new global::MyApp.RetryPolicy.Validator().Validate(name, path + ":Retry", options.Retry);
                 if (_cb_RetryResult.Failed)
                 {
-                    failures.AddRange(_cb_RetryResult.Failures);
+                    (failures ??= new global::System.Collections.Generic.List<string>()).AddRange(_cb_RetryResult.Failures);
                 }
             }
             
-            options.ValidateCustom(failures);
-            options.ValidateCustom(failures, path);
+            options.ValidateCustom((failures ??= new global::System.Collections.Generic.List<string>()));
+            options.ValidateCustom((failures ??= new global::System.Collections.Generic.List<string>()), path);
             
-            return failures.Count > 0
-                ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)
-                : global::Microsoft.Extensions.Options.ValidateOptionsResult.Success;
+            return failures is null || failures.Count == 0
+                ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Success
+                : global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures);
         }
     }
     

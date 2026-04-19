@@ -318,7 +318,14 @@ public sealed class ConfigBoundGeneratorTests
         var result = GeneratorHarness.Run(Source);
         var generated = result.GetEmittedConfigSource();
 
-        Assert.Contains("options.ValidateCustom(failures);", generated);
+        // Intent: confirm the generator emits a call to the ValidateCustom
+        // partial hook. The argument spelling depends on the emitter's
+        // lazy-allocation strategy — today it wraps `failures` in a
+        // null-coalescing compound assignment so the success path never
+        // allocates the list. Matching on the call prefix rather than the
+        // exact argument text keeps this test resilient to that kind of
+        // allocation-tuning change.
+        Assert.Contains("options.ValidateCustom(", generated);
     }
 
     [Fact]

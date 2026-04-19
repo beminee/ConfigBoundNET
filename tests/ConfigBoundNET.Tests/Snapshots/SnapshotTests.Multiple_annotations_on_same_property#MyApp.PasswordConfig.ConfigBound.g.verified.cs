@@ -53,31 +53,31 @@ partial record PasswordConfig
                 return global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail("PasswordConfig instance was null.");
             }
             
-            var failures = new global::System.Collections.Generic.List<string>();
+            global::System.Collections.Generic.List<string>? failures = null;
             
             if (string.IsNullOrWhiteSpace(options.DefaultPassword))
             {
-                failures.Add("[" + path + ":DefaultPassword] is required but was null, empty, or whitespace.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("[" + path + ":DefaultPassword] is required but was null, empty, or whitespace.");
             }
             if (options.DefaultPassword is not null && options.DefaultPassword.Length < 8)
             {
-                failures.Add("[" + path + ":DefaultPassword]" + " must have minimum length 8.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("[" + path + ":DefaultPassword]" + " must have minimum length 8.");
             }
             if (options.DefaultPassword is not null && options.DefaultPassword.Length > 128)
             {
-                failures.Add("[" + path + ":DefaultPassword]" + " must have maximum length 128.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("[" + path + ":DefaultPassword]" + " must have maximum length 128.");
             }
             if (options.DefaultPassword is not null && !_cb_Regex_DefaultPassword.IsMatch(options.DefaultPassword))
             {
-                failures.Add("[" + path + ":DefaultPassword]" + " does not match the required pattern.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("[" + path + ":DefaultPassword]" + " does not match the required pattern.");
             }
             
-            options.ValidateCustom(failures);
-            options.ValidateCustom(failures, path);
+            options.ValidateCustom((failures ??= new global::System.Collections.Generic.List<string>()));
+            options.ValidateCustom((failures ??= new global::System.Collections.Generic.List<string>()), path);
             
-            return failures.Count > 0
-                ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)
-                : global::Microsoft.Extensions.Options.ValidateOptionsResult.Success;
+            return failures is null || failures.Count == 0
+                ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Success
+                : global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures);
         }
     }
     

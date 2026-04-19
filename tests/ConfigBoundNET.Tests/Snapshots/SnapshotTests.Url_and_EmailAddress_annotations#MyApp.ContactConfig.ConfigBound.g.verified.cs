@@ -58,31 +58,31 @@ partial record ContactConfig
                 return global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail("ContactConfig instance was null.");
             }
             
-            var failures = new global::System.Collections.Generic.List<string>();
+            global::System.Collections.Generic.List<string>? failures = null;
             
             if (string.IsNullOrWhiteSpace(options.Website))
             {
-                failures.Add("[" + path + ":Website] is required but was null, empty, or whitespace.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("[" + path + ":Website] is required but was null, empty, or whitespace.");
             }
             if (string.IsNullOrWhiteSpace(options.AdminEmail))
             {
-                failures.Add("[" + path + ":AdminEmail] is required but was null, empty, or whitespace.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("[" + path + ":AdminEmail] is required but was null, empty, or whitespace.");
             }
             if (options.Website is not null && !global::System.Uri.TryCreate(options.Website, global::System.UriKind.Absolute, out _))
             {
-                failures.Add("[" + path + ":Website]" + " is not a valid absolute URL.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("[" + path + ":Website]" + " is not a valid absolute URL.");
             }
             if (options.AdminEmail is not null && !_cb_Regex_Email_AdminEmail.IsMatch(options.AdminEmail))
             {
-                failures.Add("[" + path + ":AdminEmail]" + " is not a valid email address.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("[" + path + ":AdminEmail]" + " is not a valid email address.");
             }
             
-            options.ValidateCustom(failures);
-            options.ValidateCustom(failures, path);
+            options.ValidateCustom((failures ??= new global::System.Collections.Generic.List<string>()));
+            options.ValidateCustom((failures ??= new global::System.Collections.Generic.List<string>()), path);
             
-            return failures.Count > 0
-                ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)
-                : global::Microsoft.Extensions.Options.ValidateOptionsResult.Success;
+            return failures is null || failures.Count == 0
+                ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Success
+                : global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures);
         }
     }
     
