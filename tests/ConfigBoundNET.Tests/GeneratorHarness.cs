@@ -284,4 +284,74 @@ internal static class GeneratorHarness
         var valueProperty = optionsClosed.GetProperty("Value")!;
         return valueProperty.GetValue(optionsInstance)!;
     }
+
+    /// <summary>
+    /// Compiles <paramref name="source"/>, runs the generator, and invokes the
+    /// assembly-wide <c>ConfigBoundNET.ConfigBoundSectionRegistrations
+    /// .AddConfigBoundSections(services, configuration)</c> method. Returns
+    /// the bound <see cref="IOptions{T}.Value"/> for the requested
+    /// <paramref name="typeName"/>, same shape as <see cref="CompileAndBind"/>
+    /// but exercising the aggregate registration path instead of the per-type
+    /// extension.
+    /// </summary>
+    public static object CompileAndBindViaAggregate(string source, string typeName, IDictionary<string, string?> configValues)
+    {
+        var parseOptions = new CSharpParseOptions(LanguageVersion.Latest);
+        var syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
+
+        var compilation = CSharpCompilation.Create(
+            assemblyName: "ConfigBoundNET.Tests.Aggregate." + System.Guid.NewGuid().ToString("N"),
+            syntaxTrees: new[] { syntaxTree },
+            references: References,
+            options: new CSharpCompilationOptions(
+                OutputKind.DynamicallyLinkedLibrary,
+                nullableContextOptions: NullableContextOptions.Enable));
+
+        var driver = CSharpGeneratorDriver.Create(
+            generators: new[] { new ConfigBoundGenerator().AsSourceGenerator() },
+            additionalTexts: ImmutableArray<AdditionalText>.Empty,
+            parseOptions: parseOptions,
+            optionsProvider: null);
+
+        driver = (CSharpGeneratorDriver)driver.RunGeneratorsAndUpdateCompilation(
+            compilation,
+            out var augmentedCompilation,
+            out _);
+
+        using var peStream = new MemoryStream();
+        var emitResult = augmentedCompilation.Emit(peStream);
+        if (!emitResult.Success)
+        {
+            var errors = string.Join(
+                System.Environment.NewLine,
+                emitResult.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error));
+            throw new System.InvalidOperationException(
+                "Generator output failed to compile:" + System.Environment.NewLine + errors);
+        }
+
+        peStream.Position = 0;
+        var assembly = Assembly.Load(peStream.ToArray());
+
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(configValues)
+            .Build();
+
+        // Locate the generated aggregate extension and invoke it. The class
+        // lives in namespace ConfigBoundNET, so use the simple name lookup.
+        var aggregateType = assembly.GetTypes()
+            .Single(t => t.Name == "ConfigBoundSectionRegistrations");
+        var aggregateMethod = aggregateType.GetMethod(
+            "AddConfigBoundSections",
+            BindingFlags.Public | BindingFlags.Static)!;
+
+        var services = new ServiceCollection();
+        aggregateMethod.Invoke(null, new object[] { services, configuration });
+        var sp = services.BuildServiceProvider();
+
+        var optionsType = assembly.GetTypes().Single(t => t.Name == typeName);
+        var optionsClosed = typeof(IOptions<>).MakeGenericType(optionsType);
+        var optionsInstance = sp.GetRequiredService(optionsClosed)!;
+        var valueProperty = optionsClosed.GetProperty("Value")!;
+        return valueProperty.GetValue(optionsInstance)!;
+    }
 }

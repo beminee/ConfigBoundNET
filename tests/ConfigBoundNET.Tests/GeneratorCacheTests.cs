@@ -241,6 +241,32 @@ public sealed class GeneratorCacheTests
     }
 
     [Fact]
+    public void Editing_unrelated_annotation_does_not_invalidate_aggregate()
+    {
+        // The AggregateEntries pipeline step carries only (Namespace, TypeName)
+        // per type — not the full property / annotation detail. Changing a
+        // [Range] on one property must therefore NOT invalidate the aggregate
+        // step's cache, even though it DOES invalidate the per-type
+        // BuildResults step. This test pins that isolation so a future leak
+        // of per-type detail into AggregateEntry fails loudly.
+        var (driver, compilation) = GeneratorHarness.CreateDriverWithTracking(BaselineSource);
+
+        // Edit a [Range(1, 20)] bound to [Range(1, 30)] on RetryConfig.MaxAttempts.
+        // Semantically meaningful for per-type validator emission, but leaves
+        // the set of [ConfigSection] type identities unchanged.
+        var original = compilation.SyntaxTrees.First();
+        var modifiedSource = original.GetText().ToString().Replace(
+            "[Range(1, 20)]",
+            "[Range(1, 30)]");
+
+        var modifiedTree = CSharpSyntaxTree.ParseText(modifiedSource);
+        compilation = compilation.ReplaceSyntaxTree(original, modifiedTree);
+        driver = driver.RunGenerators(compilation);
+
+        AssertAllStepOutputsAreCacheable(driver, TrackingNames.AggregateEntries);
+    }
+
+    [Fact]
     public void Whitespace_edit_in_unrelated_tree_does_not_invalidate_cache()
     {
         // A stricter variant of Unrelated_compilation_edit_does_not_invalidate_cache:

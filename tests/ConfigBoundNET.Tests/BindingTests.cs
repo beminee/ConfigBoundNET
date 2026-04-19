@@ -1097,6 +1097,99 @@ public sealed class BindingTests
         Assert.Equal(5, GetProp(nested, "MaxAttempts"));
     }
 
+    // ── Aggregate registration tests ─────────────────────────────────────
+
+    [Fact]
+    public void AddConfigBoundSections_registers_every_present_section()
+    {
+        // Two [ConfigSection] types, both sections present in config. The
+        // aggregate extension must register both and bind both correctly.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+            }
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public string BaseUrl { get; init; } = default!;
+            }
+            """;
+
+        var dbBound = GeneratorHarness.CompileAndBindViaAggregate(
+            Source,
+            "DbConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "Server=localhost",
+                ["Api:BaseUrl"] = "https://api.example/",
+            });
+
+        Assert.Equal("Server=localhost", GetProp(dbBound, "Conn"));
+
+        // Second resolve against the aggregate path too, to prove both types
+        // were actually registered.
+        var apiBound = GeneratorHarness.CompileAndBindViaAggregate(
+            Source,
+            "ApiConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "Server=localhost",
+                ["Api:BaseUrl"] = "https://api.example/",
+            });
+
+        Assert.Equal("https://api.example/", GetProp(apiBound, "BaseUrl"));
+    }
+
+    [Fact]
+    public void AddConfigBoundSections_skips_type_whose_section_is_absent()
+    {
+        // Only "Db" is present in config; "Tenant" is absent. The .Exists()
+        // gate means AddTenantConfig is NOT called, so TenantConfig's
+        // validator doesn't fire against an empty section. Resolving
+        // IOptions<TenantConfig> must return a default-valued instance (via
+        // the stock OptionsFactory) rather than throwing a validation error.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+            }
+
+            [ConfigSection("__tenant__")]
+            public partial record TenantConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        // Only Db:Conn in config; no __tenant__ keys.
+        // If the generator had naively called AddTenantConfig unconditionally,
+        // the validator would fail at IOptions resolution with
+        // "[__tenant__:Url] is required". The .Exists() gate skips the
+        // registration entirely, so resolution gets a default instance.
+        var tenantBound = GeneratorHarness.CompileAndBindViaAggregate(
+            Source,
+            "TenantConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "Server=localhost",
+            });
+
+        // Default-valued (not bound, not validated): Url keeps its default! value.
+        Assert.NotNull(tenantBound);
+    }
+
     /// <summary>
     /// Reflection helper that mirrors what a real consumer would write
     /// statically as <c>options.Conn</c>. Used here only because the test type
