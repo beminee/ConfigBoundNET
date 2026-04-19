@@ -60,7 +60,7 @@ Measures the incremental source generator itself, how fast ConfigBoundNET runs d
 
 Parameterised over `TypeCount = { 1, 10, 50 }`. A small script, a realistic medium project, and a large one. Healthy scaling: cold-run time grows sublinearly with type count; incremental time stays a fraction of cold-run time regardless of size.
 
-Both benchmarks use two parallel config types (`ConfigBoundAppConfig`, `MicrosoftAppConfig`) with identical shape — scalars, a nested complex type, a `List<string>`, and a `Dictionary<string, string>`, plus a representative cross-section of DataAnnotations (`[Range]`, `[Url]`, `[EmailAddress]`, `[StringLength]`, `[Required]`). This isolates machinery cost from workload cost.
+Both benchmarks use two parallel config types (`ConfigBoundAppConfig`, `MicrosoftAppConfig`) with identical shape, scalars, a nested complex type, a `List<string>`, and a `Dictionary<string, string>`, plus a representative cross-section of DataAnnotations (`[Range]`, `[Url]`, `[EmailAddress]`, `[StringLength]`, `[Required]`). This isolates machinery cost from workload cost.
 
 ## Sample results
 
@@ -80,9 +80,9 @@ One representative run on a Windows 10 laptop, 13th Gen Intel Core i7-13700H, .N
 | **ConfigBoundNET**: generated `Validator.Validate` | **85.84 ns**¹ | **1.00×** | **96 B** | **1.00×** |
 | Microsoft: `[OptionsValidator]` generated validate | 180.50 ns | 2.10× | 968 B | 10.08× |
 
-¹ Median — the same run's mean was 124 ns with high stddev from background load; the median is the cleaner signal for this pair.
+¹ Median. The same run's mean was 124 ns with high stddev from background load; the median is the cleaner signal for this pair.
 
-ConfigBoundNET comes out roughly **2× faster** on both axes with **~10× fewer allocations** on this hardware. The allocation gap comes from two places: (a) `[OptionsValidator]` leans heavily on `ValidateOptionsResultBuilder` and per-check intermediate strings, while ConfigBoundNET emits plain `if (...) failures.Add(...)` lines; (b) ConfigBoundNET's `failures` list is now allocated lazily on first failure — the success path (every validation after startup, in production) allocates no `List<string>` at all. The `Validator_success_path_allocates_no_failures_list` test in [BindingTests.cs](../tests/ConfigBoundNET.Tests/BindingTests.cs) pins this contract.
+ConfigBoundNET comes out roughly **2× faster** on both axes with **~10× fewer allocations** on this hardware. The allocation gap comes from two places: (a) `[OptionsValidator]` leans heavily on `ValidateOptionsResultBuilder` and per-check intermediate strings, while ConfigBoundNET emits plain `if (...) failures.Add(...)` lines; (b) ConfigBoundNET's `failures` list is now allocated lazily on first failure, the success path (every validation after startup, in production) allocates no `List<string>` at all. The `Validator_success_path_allocates_no_failures_list` test in [BindingTests.cs](../tests/ConfigBoundNET.Tests/BindingTests.cs) pins this contract.
 
 **Generator runtime cost** (measures the source generator itself during compilation, across project sizes)
 
@@ -97,8 +97,8 @@ ConfigBoundNET comes out roughly **2× faster** on both axes with **~10× fewer 
 Takeaways:
 - **Cold scaling is strongly sublinear**: going from 1 to 50 types costs ~2.75× more, not 50×. Most of the cold-run cost is fixed Roslyn setup (BCL reference resolution, syntax-tree indexing); the per-type generator work amortises to tens of microseconds.
 - **Incremental path is always cheaper than cold**, roughly 0.3×–0.63× across sizes, with half the allocations or less. The remaining cost is Roslyn's per-compilation scan for `[ConfigSection]` attributes (that's unavoidable. The generator can't know a tree has no relevant types without looking at it); the actual per-type transforms hit the cache and skip emission.
-- **Single-edit IDE cost** on a 50-type project is ~1.85 ms. Typing inside a file that doesn't touch any `[ConfigSection]` type adds this much to each incremental build — imperceptible in practice.
-- **Allocation is dominated by Roslyn internals**, not our `ModelBuilder`. A pass to tighten `ModelBuilder.Build` (pre-size the properties list, lazy-allocate the annotations list, `default(EquatableArray<T>)` for zero-annotation) produced a measurably tighter implementation but a negligible allocation delta — the budget lives in `ForAttributeWithMetadataName` scans, semantic-model construction, and `GetAttributes()`/`ToDisplayString()` calls, not in our transforms. Future reductions would need Roslyn-level structural changes.
+- **Single-edit IDE cost** on a 50-type project is ~1.85 ms. Typing inside a file that doesn't touch any `[ConfigSection]` type adds this much to each incremental build, imperceptible in practice.
+- **Allocation is dominated by Roslyn internals**, not our `ModelBuilder`. A pass to tighten `ModelBuilder.Build` (pre-size the properties list, lazy-allocate the annotations list, `default(EquatableArray<T>)` for zero-annotation) produced a measurably tighter implementation but a negligible allocation delta, the budget lives in `ForAttributeWithMetadataName` scans, semantic-model construction, and `GetAttributes()`/`ToDisplayString()` calls, not in our transforms. Future reductions would need Roslyn-level structural changes.
 - If the incremental ratio ever drifts above ~0.8× at any type count, it indicates a caching regression, probably a non-equatable type leaked into the pipeline model. [`GeneratorCacheTests`](../tests/ConfigBoundNET.Tests/GeneratorCacheTests.cs) pins the correctness side; this benchmark exposes the time-cost side.
 
 ## Confirming both Microsoft generators activated
@@ -120,4 +120,4 @@ All three directories should be present. If a Microsoft one is missing, the corr
 
 **Don't:** commit absolute numbers as hard targets. Results vary significantly by CPU, JIT version, OS scheduling, and kernel settings. Committing a baseline `.csv` and gating CI against it is an exercise in fighting noise.
 
-This is a **local-run tool**. No CI step executes these benchmarks. If you land a PR and want to know "did this regress perf?", re-run locally on the same machine before and after — in-process `Ratio` columns are the only signal that survives hardware variance.
+This is a **local-run tool**. No CI step executes these benchmarks. If you land a PR and want to know "did this regress perf?", re-run locally on the same machine before and after, in-process `Ratio` columns are the only signal that survives hardware variance.
