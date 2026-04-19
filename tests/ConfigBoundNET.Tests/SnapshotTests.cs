@@ -658,6 +658,83 @@ public sealed class SnapshotTests
         return VerifyDriver(Source);
     }
 
+    // ── [Sensitive] redaction ────────────────────────────────────────────
+
+    [Fact]
+    public Task Sensitive_attribute_on_record()
+    {
+        // Pins the record-shaped PrintMembers override. A reference-type
+        // sensitive property gets the null-safe ternary; a value-type one
+        // renders unconditionally as "***"; a non-sensitive property is
+        // passed through via `builder.Append(this.X)`.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                [Sensitive]
+                public string Conn { get; init; } = default!;
+
+                [Sensitive]
+                public System.Guid Token { get; init; }
+
+                public int Port { get; init; } = 5432;
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
+    [Fact]
+    public Task Sensitive_attribute_on_class()
+    {
+        // Pins the class-shaped ToString override. Classes don't get a
+        // compiler-synthesized PrintMembers, so the emitter produces the
+        // whole `"TypeName { ... }"` wrapper itself.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Cache")]
+            public partial class CacheConfig
+            {
+                [Sensitive]
+                public string Secret { get; set; } = default!;
+
+                public int Port { get; set; } = 6379;
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
+    [Fact]
+    public Task Sensitive_attribute_absent_emits_no_redacted_override()
+    {
+        // Without any [Sensitive] property, the emitter must emit no
+        // PrintMembers / ToString override — the compiler's default record
+        // behaviour handles the common case, and emitting an override for
+        // every type would break users who've hand-written their own.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Plain")]
+            public partial record PlainConfig
+            {
+                public string Conn { get; init; } = default!;
+                public int Port { get; init; } = 5432;
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
     // ── Custom validation hook ───────────────────────────────────────────
 
     [Fact]

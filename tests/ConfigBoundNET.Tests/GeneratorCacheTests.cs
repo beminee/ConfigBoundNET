@@ -48,6 +48,7 @@ public sealed class GeneratorCacheTests
         [ConfigSection("Db")]
         public partial record DbConfig
         {
+            [Sensitive]
             public string Conn { get; init; } = default!;
 
             [Range(1, 65535)]

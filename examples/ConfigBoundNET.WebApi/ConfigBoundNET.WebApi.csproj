@@ -14,8 +14,14 @@
          CA1303: string literals in example console output.
          CA1515: public types in app (ASP.NET controllers need public).
          CA1819/CA1002: arrays and List<T> on config records are intentional
-         — they demonstrate ConfigBoundNET's collection binding feature. -->
-    <NoWarn>$(NoWarn);CA1812;CA1852;CA1303;CA1515;CA1819;CA1002</NoWarn>
+         — they demonstrate ConfigBoundNET's collection binding feature.
+         CA1848: use LoggerMessage delegates for perf. Example code —
+         clarity beats perf here; real apps with hot log sites should
+         follow CA1848's advice.
+         CA1873: "expensive argument" for structured log calls — the
+         destructured config objects are cheap reads; the analyser can't
+         tell, so we suppress alongside CA1848. -->
+    <NoWarn>$(NoWarn);CA1812;CA1852;CA1303;CA1515;CA1819;CA1002;CA1848;CA1873</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -29,6 +35,14 @@
          attributes the generator scans. Already transitive in most ASP.NET
          Core apps, but listed explicitly so the example is self-contained. -->
     <PackageReference Include="System.ComponentModel.Annotations" Version="5.0.0" />
+
+    <!-- Serilog — the example demonstrates that [Sensitive] redacts
+         transparently through Serilog's structured-logging destructurer
+         (`{@X}` templates). ReadFrom.Configuration wires the "Serilog"
+         section from appsettings.json, Console sink comes transitively
+         via Serilog.AspNetCore. -->
+    <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
+    <PackageReference Include="Serilog.Settings.Configuration" Version="9.0.0" />
   </ItemGroup>
 
 </Project>

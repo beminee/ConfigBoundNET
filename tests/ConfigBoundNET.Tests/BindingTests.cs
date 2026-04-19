@@ -1168,6 +1168,338 @@ public sealed class BindingTests
             "(FailuresAccessor in SourceEmitter) has been bypassed or reverted.");
     }
 
+    // ── [Sensitive] redaction ───────────────────────────────────────────
+
+    [Fact]
+    public void Sensitive_attribute_redacts_reference_type_in_ToString()
+    {
+        // A [Sensitive] string property must print as "***" in ToString()
+        // so it doesn't leak through `logger.LogInformation("{Config}", c)`
+        // or direct ToString() calls.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                [Sensitive]
+                public string Conn { get; init; } = default!;
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "DbConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "Server=secret-host;User=alice;Password=hunter2",
+            });
+
+        var s = bound.ToString()!;
+        Assert.Contains("Conn = ***", s);
+        Assert.DoesNotContain("hunter2", s);
+        Assert.DoesNotContain("secret-host", s);
+    }
+
+    [Fact]
+    public void Sensitive_attribute_prints_null_for_null_reference()
+    {
+        // Null-valued sensitive properties render as "null" so missing
+        // config is distinguishable from set-but-redacted at debug time.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                [Sensitive]
+                public string? Conn { get; init; }
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "DbConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Other"] = "noise",
+            });
+
+        var s = bound.ToString()!;
+        Assert.Contains("Conn = null", s);
+        Assert.DoesNotContain("***", s);
+    }
+
+    [Fact]
+    public void Sensitive_attribute_redacts_value_type()
+    {
+        // Value-type sensitives always render as "***" — there's no null
+        // case to distinguish, so we don't bother with the ternary.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Auth")]
+            public partial record AuthConfig
+            {
+                [Sensitive]
+                public System.Guid Token { get; init; }
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "AuthConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Auth:Token"] = "0c4f1b9a-7e3a-4b2d-9a8e-1c2d3e4f5a6b",
+            });
+
+        var s = bound.ToString()!;
+        Assert.Contains("Token = ***", s);
+        Assert.DoesNotContain("0c4f1b9a", s);
+    }
+
+    [Fact]
+    public void Sensitive_attribute_leaves_non_sensitive_properties_unchanged()
+    {
+        // Only properties marked [Sensitive] are redacted. Everything else
+        // renders with its real value, so logs keep their diagnostic value.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                [Sensitive]
+                public string Conn { get; init; } = default!;
+
+                public int Port { get; init; } = 5432;
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "DbConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "Server=secret",
+                ["Db:Port"] = "8080",
+            });
+
+        var s = bound.ToString()!;
+        Assert.Contains("Conn = ***", s);
+        Assert.Contains("Port = 8080", s);
+        Assert.DoesNotContain("Server=secret", s);
+    }
+
+    // ── [Sensitive] structured-logging redaction via IReadOnlyDictionary ──
+
+    [Fact]
+    public void Sensitive_config_implements_ReadOnlyDictionary_with_redacted_values()
+    {
+        // TryGetValue is the core contract: Serilog, System.Text.Json,
+        // MEL's JsonConsoleFormatter and friends all call into it (or
+        // enumerate) to retrieve structured values. Sensitive properties
+        // must come back redacted; non-sensitive ones pass through.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                [Sensitive]
+                public string Conn { get; init; } = default!;
+                public int Port { get; init; }
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "DbConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "Server=secret-host;Password=hunter2",
+                ["Db:Port"] = "5432",
+            });
+
+        var dict = (System.Collections.Generic.IReadOnlyDictionary<string, object?>)bound;
+
+        Assert.True(dict.TryGetValue("Conn", out var conn));
+        Assert.Equal("***", conn);
+
+        Assert.True(dict.TryGetValue("Port", out var port));
+        Assert.Equal(5432, port);
+
+        Assert.False(dict.TryGetValue("DoesNotExist", out var missing));
+        Assert.Null(missing);
+    }
+
+    [Fact]
+    public void Sensitive_config_Keys_returns_all_property_names()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                [Sensitive]
+                public string Conn { get; init; } = default!;
+                public int Port { get; init; }
+                public string Host { get; init; } = default!;
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "DbConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "x",
+                ["Db:Host"] = "localhost",
+            });
+
+        var dict = (System.Collections.Generic.IReadOnlyDictionary<string, object?>)bound;
+
+        var expected = new[] { "Conn", "Port", "Host" };
+        Assert.Equal(expected, dict.Keys);
+    }
+
+    [Fact]
+    public void Sensitive_config_Count_matches_property_count()
+    {
+        // Count is hardcoded at generate time; make sure we're counting
+        // every public property, not just the sensitive ones.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                [Sensitive]
+                public string Conn { get; init; } = default!;
+                public int Port { get; init; }
+                public string Host { get; init; } = default!;
+                public System.TimeSpan Timeout { get; init; }
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "DbConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "x",
+                ["Db:Host"] = "localhost",
+            });
+
+        var dict = (System.Collections.Generic.IReadOnlyDictionary<string, object?>)bound;
+        Assert.Equal(4, dict.Count);
+    }
+
+    [Fact]
+    public void Sensitive_config_enumerates_as_KVPs_with_redaction()
+    {
+        // foreach over the interface cast — the path Serilog's
+        // default destructurer actually takes when it sees
+        // IEnumerable<KeyValuePair<string, object?>>.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                [Sensitive]
+                public string Conn { get; init; } = default!;
+                public int Port { get; init; }
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "DbConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "Server=secret-host",
+                ["Db:Port"] = "5432",
+            });
+
+        var dict = (System.Collections.Generic.IReadOnlyDictionary<string, object?>)bound;
+        var pairs = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, object?>>();
+        foreach (var kvp in dict)
+        {
+            pairs.Add(kvp);
+        }
+
+        Assert.Equal(2, pairs.Count);
+        Assert.Equal("Conn", pairs[0].Key);
+        Assert.Equal("***", pairs[0].Value);
+        Assert.Equal("Port", pairs[1].Key);
+        Assert.Equal(5432, pairs[1].Value);
+    }
+
+    [Fact]
+    public void Sensitive_config_json_serialization_redacts_through_dictionary_path()
+    {
+        // The end-to-end "transparent across frameworks" proof:
+        // JsonSerializer.Serialize(config) with NO custom converter, NO
+        // source-gen context, and NO ToString involvement. STJ picks its
+        // ReadOnlyDictionaryConverter for our type and writes each property
+        // as a JSON key with the (possibly redacted) value.
+        //
+        // This is what MEL's JsonConsoleFormatter and most OpenTelemetry
+        // JSON log exporters do under the hood when they serialize a
+        // structured-log argument.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                [Sensitive]
+                public string Conn { get; init; } = default!;
+                public int Port { get; init; }
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "DbConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "Server=secret-host;Password=hunter2",
+                ["Db:Port"] = "5432",
+            });
+
+        // Cast to object so STJ picks the runtime-type converter — matches
+        // how MEL and OTel serialize log-scope arguments (they have a
+        // System.Object-typed slot, not a strongly-typed one).
+        var json = System.Text.Json.JsonSerializer.Serialize((object)bound);
+
+        Assert.Contains("\"Conn\":\"***\"", json);
+        Assert.Contains("\"Port\":5432", json);
+        Assert.DoesNotContain("hunter2", json);
+        Assert.DoesNotContain("secret-host", json);
+    }
+
     // ── Aggregate registration tests ─────────────────────────────────────
 
     [Fact]

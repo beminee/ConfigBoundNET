@@ -168,9 +168,10 @@ internal static class GeneratorHarness
 
     /// <summary>
     /// Returns every generated tree that is <em>not</em> a post-init output
-    /// (i.e. excludes the attribute and the <c>ConfigBoundOptionsFactory</c>
-    /// helper). Use this when a test wants to assert on what the generator
-    /// produced for the user's annotated types.
+    /// (i.e. excludes the ConfigSection attribute, the
+    /// <c>ConfigBoundOptionsFactory</c> helper, and the <c>[Sensitive]</c>
+    /// attribute). Use this when a test wants to assert on what the
+    /// generator produced for the user's annotated types.
     /// </summary>
     public static IEnumerable<Microsoft.CodeAnalysis.SyntaxTree> NonPostInitGeneratedTrees(this GeneratorDriverRunResult result)
     {
@@ -183,6 +184,11 @@ internal static class GeneratorHarness
             }
 
             if (path.EndsWith(AttributeSource.OptionsFactoryHintName, System.StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (path.EndsWith(AttributeSource.SensitiveAttributeHintName, System.StringComparison.Ordinal))
             {
                 continue;
             }

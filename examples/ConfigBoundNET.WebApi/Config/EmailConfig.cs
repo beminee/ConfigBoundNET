@@ -30,6 +30,9 @@ public partial record EmailConfig
     public bool UseTls { get; init; } = true;
 
     public string? Username { get; init; }
+
+    // [Sensitive] — SMTP password. Never logged, never serialized as-is.
+    [Sensitive]
     public string? Password { get; init; }
 
     partial void ValidateCustom(List<string> failures)

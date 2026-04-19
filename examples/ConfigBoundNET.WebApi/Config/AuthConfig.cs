@@ -15,6 +15,9 @@ namespace ConfigBoundNET.WebApi.Config;
 [ConfigSection("Auth")]
 public partial record AuthConfig
 {
+    // [Sensitive] — HMAC signing key; leaking it into logs breaks every
+    // token the API has ever issued.
+    [Sensitive]
     [MinLength(32)]
     public string JwtSecret { get; init; } = default!;
 

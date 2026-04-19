@@ -32,6 +32,12 @@ public partial record RetryConfig
 [ConfigSection("Database")]
 public partial record DatabaseConfig
 {
+    // [Sensitive] — a connection string usually embeds credentials, so it
+    // gets redacted wherever the config is dumped as a whole (ToString,
+    // Serilog {@X}, System.Text.Json, etc.). Direct property access
+    // (db.ConnectionString) still returns the real value so EF Core, Dapper,
+    // or ADO.NET can actually open a connection.
+    [Sensitive]
     public string ConnectionString { get; init; } = default!;
 
     [Range(1, 300)]

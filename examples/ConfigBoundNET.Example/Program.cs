@@ -41,6 +41,17 @@ System.Console.WriteLine($"[{DbConfig.SectionName}] CommandTimeoutSeconds  = {db
 System.Console.WriteLine($"[{DbConfig.SectionName}] ReplicaConn            = {dbConfig.ReplicaConn ?? "(not set)"}");
 System.Console.WriteLine();
 System.Console.WriteLine("Validation passed — all cross-field rules satisfied.");
+System.Console.WriteLine();
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. Demonstrate [Sensitive] redaction. Direct property access (above) still
+//    returns the raw value — that's by design; your app code needs the real
+//    secret to open a connection. But anywhere the config is dumped as a
+//    whole — ToString(), structured-log destructurers, JSON serializers —
+//    the [Sensitive] property is replaced with "***".
+// ─────────────────────────────────────────────────────────────────────────────
+System.Console.WriteLine("ToString()   : " + dbConfig);
+System.Console.WriteLine("JSON via STJ : " + System.Text.Json.JsonSerializer.Serialize((object)dbConfig));
 
 namespace ConfigBoundNET.Example
 {
@@ -57,6 +68,13 @@ namespace ConfigBoundNET.Example
     ///   <item><description><c>DbConfig.Validator</c> — an <c>IValidateOptions&lt;DbConfig&gt;</c> that null-checks non-nullable properties and runs DataAnnotations checks.</description></item>
     ///   <item><description><c>DbConfigServiceCollectionExtensions.AddDbConfig</c> — the DI helper called in <c>Program.cs</c>.</description></item>
     ///   <item><description><c>partial void ValidateCustom</c> — a hook for cross-field validation rules that no single-property attribute can express.</description></item>
+    ///   <item><description>
+    ///     A redacted <c>PrintMembers</c> override and an explicit
+    ///     <c>IReadOnlyDictionary&lt;string, object?&gt;</c> implementation,
+    ///     emitted because <see cref="Conn"/> is decorated with
+    ///     <c>[Sensitive]</c>. See the bottom of <c>Program.cs</c> for what
+    ///     this does to <c>ToString()</c> and JSON serialization output.
+    ///   </description></item>
     /// </list>
     /// <para>
     /// Non-nullable reference-type properties (like <see cref="Conn"/>) are
@@ -67,7 +85,15 @@ namespace ConfigBoundNET.Example
     [ConfigSection("Db")]
     internal partial record DbConfig
     {
-        /// <summary>The database connection string. Required.</summary>
+        /// <summary>
+        /// The database connection string. Required. Marked <c>[Sensitive]</c>
+        /// so it's redacted in <c>ToString()</c> and in structured-logging
+        /// destructurers — the generator also emits
+        /// <c>IReadOnlyDictionary&lt;string, object?&gt;</c> so Serilog /
+        /// System.Text.Json / MEL / NLog all see <c>"***"</c> without any
+        /// logger-specific configuration.
+        /// </summary>
+        [Sensitive]
         public string Conn { get; init; } = default!;
 
         /// <summary>Command timeout in seconds. Optional; defaults to 30.</summary>
