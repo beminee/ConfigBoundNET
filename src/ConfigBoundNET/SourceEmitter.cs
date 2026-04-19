@@ -179,9 +179,14 @@ internal static class SourceEmitter
         writer.WriteLine("// </auto-generated>");
         writer.WriteLine("#nullable enable");
 
-        // Suppress noisy warnings inside generated code: unused fields, missing
-        // docs, etc. We don't want user builds to fail on generator output.
-        writer.WriteLine("#pragma warning disable CS1591");
+        // Suppress noisy warnings inside generated code:
+        //   CS1591 — missing XML doc comment on publicly visible member.
+        //   CA1710 — types implementing IReadOnlyDictionary should end in
+        //            "Dictionary" / "Collection". Our [Sensitive]-driven
+        //            dictionary impl makes user's config types "look like"
+        //            dictionaries; renaming the user's type is the wrong
+        //            fix, so silence it inside the generated file only.
+        writer.WriteLine("#pragma warning disable CS1591, CA1710");
         writer.WriteLine();
     }
 
@@ -193,10 +198,42 @@ internal static class SourceEmitter
     private static void WritePartialTypeWithValidator(IndentedTextWriter writer, ConfigSectionModel model)
     {
         var typeKeyword = model.Kind == ConfigTypeKind.Record ? "partial record" : "partial class";
+        var hasSensitive = HasAnySensitiveProperty(model);
+
+        // When the partial implements IReadOnlyDictionary<string, object?>,
+        // CA1710 will complain that the user's type name doesn't end in
+        // "Dictionary" / "Collection". Renaming the user's type isn't an
+        // option — their type is primarily a config record, the dictionary
+        // surface is implementation detail. Attach [SuppressMessage] to the
+        // generated partial; partial-applied attributes accumulate onto the
+        // merged type, so this silences the warning at both source sites.
+        if (hasSensitive)
+        {
+            writer.WriteLine("[global::System.Diagnostics.CodeAnalysis.SuppressMessage(");
+            writer.Indent++;
+            writer.WriteLine("\"Naming\", \"CA1710:Identifiers should have correct suffix\",");
+            writer.WriteLine("Justification = \"Type is a [ConfigSection] record with an explicit IReadOnlyDictionary<string, object?> impl emitted for [Sensitive]-redacted structured logging. Its primary role is config, not collection.\")]");
+            writer.Indent--;
+        }
 
         writer.Write(typeKeyword);
         writer.Write(' ');
-        writer.WriteLine(model.TypeName);
+        writer.Write(model.TypeName);
+
+        // When any property is [Sensitive], our partial implements
+        // IReadOnlyDictionary<string, object?> so structured-logging
+        // destructurers (Serilog {@X}, MEL JsonConsoleFormatter via STJ's
+        // dictionary converter, NLog ${json-encode}, OpenTelemetry JSON
+        // exporters, etc.) see redacted values through the interface
+        // contract without ever reflecting over the type's properties.
+        // All members are explicitly implemented further down so the user's
+        // own API surface (config.Conn, config.Port) is unchanged.
+        if (hasSensitive)
+        {
+            writer.Write(" : global::System.Collections.Generic.IReadOnlyDictionary<string, object?>");
+        }
+
+        writer.WriteLine();
         writer.WriteLine("{");
         writer.Indent++;
 
@@ -423,8 +460,362 @@ internal static class SourceEmitter
         writer.WriteLine("/// <param name=\"path\">Full configuration path to this options instance, e.g. <c>\"Api:Endpoints:1\"</c>.</param>");
         writer.WriteLine("partial void ValidateCustom(global::System.Collections.Generic.List<string> failures, string path);");
 
+        // ── Redacted ToString — only emitted when at least one property is
+        //    decorated with [Sensitive]. Keeps the default record ToString
+        //    path intact for the common case (no sensitive props, no emission).
+        if (HasAnySensitiveProperty(model))
+        {
+            writer.WriteLine();
+            if (model.Kind == ConfigTypeKind.Record)
+            {
+                WriteRedactedPrintMembers(writer, model);
+            }
+            else
+            {
+                WriteRedactedToString(writer, model);
+            }
+
+            // ── IReadOnlyDictionary<string, object?> implementation. Makes
+            //    structured-logging destructurers (Serilog {@X}, MEL's
+            //    JsonConsoleFormatter via STJ's dictionary converter, etc.)
+            //    see redacted values through the interface contract — no
+            //    reflection over properties on our side, and transparent to
+            //    the user: config.Conn still works, foreach(var kvp in config)
+            //    still doesn't compile. Interface methods are only reachable
+            //    via an explicit cast, which is exactly what loggers do.
+            writer.WriteLine();
+            WriteDictionaryInterfaceImplementation(writer, model);
+        }
+
         writer.Indent--;
         writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when any property on <paramref name="model"/>
+    /// carries <c>[Sensitive]</c>. Gates emission of the redacted
+    /// <c>PrintMembers</c> / <c>ToString</c> override — types with zero
+    /// sensitive properties keep the compiler's default record behaviour and
+    /// produce byte-identical output to pre-[Sensitive] generator versions.
+    /// </summary>
+    private static bool HasAnySensitiveProperty(ConfigSectionModel model)
+    {
+        foreach (var prop in model.Properties)
+        {
+            if (prop.IsSensitive)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Emits a record-shaped <c>PrintMembers</c> override that redacts
+    /// <c>[Sensitive]</c> properties to <c>"***"</c>. The compiler-synthesized
+    /// record <c>ToString</c> wraps this as
+    /// <c>"TypeName { member1 = v1, member2 = v2 }"</c> automatically, so we
+    /// only need to produce the inside-the-braces content.
+    /// </summary>
+    /// <remarks>
+    /// Reference-type and nullable-value sensitive properties render as
+    /// <c>"null"</c> when the value is null and <c>"***"</c> otherwise, so
+    /// debugging can still tell missing-config apart from set-but-redacted.
+    /// Non-nullable value-type sensitives (e.g. <c>[Sensitive] Guid</c>) always
+    /// render as <c>"***"</c> — there's no null case to distinguish.
+    /// </remarks>
+    private static void WriteRedactedPrintMembers(IndentedTextWriter writer, ConfigSectionModel model)
+    {
+        writer.WriteLine("/// <summary>");
+        writer.WriteLine("/// Record <c>PrintMembers</c> override emitted by ConfigBoundNET because");
+        writer.WriteLine("/// at least one property is decorated with <c>[Sensitive]</c>. Replaces");
+        writer.WriteLine("/// those property values with <c>\"***\"</c> so <c>ToString()</c>,");
+        writer.WriteLine("/// <c>logger.LogInformation(\"{Config}\", cfg)</c>, and similar callers");
+        writer.WriteLine("/// don't leak secrets.");
+        writer.WriteLine("/// </summary>");
+        writer.WriteLine("protected virtual bool PrintMembers(global::System.Text.StringBuilder builder)");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        WriteRedactedMemberAppends(writer, model);
+
+        writer.WriteLine("return true;");
+
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Emits a class-shaped <c>ToString</c> override — the non-record
+    /// counterpart to <see cref="WriteRedactedPrintMembers"/>. Classes don't
+    /// get a compiler-synthesized <c>PrintMembers</c> to hook into, so we
+    /// build the whole string including the <c>"TypeName { ... }"</c> wrapper.
+    /// </summary>
+    private static void WriteRedactedToString(IndentedTextWriter writer, ConfigSectionModel model)
+    {
+        writer.WriteLine("/// <summary>");
+        writer.WriteLine("/// <c>ToString</c> override emitted by ConfigBoundNET because at least");
+        writer.WriteLine("/// one property is decorated with <c>[Sensitive]</c>. Replaces those");
+        writer.WriteLine("/// property values with <c>\"***\"</c> so log output doesn't leak secrets.");
+        writer.WriteLine("/// </summary>");
+        writer.WriteLine("public override string ToString()");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        writer.WriteLine("var builder = new global::System.Text.StringBuilder();");
+        writer.Write("builder.Append(\"");
+        writer.Write(model.TypeName);
+        writer.WriteLine(" { \");");
+
+        WriteRedactedMemberAppends(writer, model);
+
+        writer.WriteLine("builder.Append(\" }\");");
+        writer.WriteLine("return builder.ToString();");
+
+        writer.Indent--;
+        writer.WriteLine("}");
+    }
+
+    /// <summary>
+    /// Shared body of the redacted <c>PrintMembers</c> / <c>ToString</c>
+    /// emitters: walks <paramref name="model"/>.Properties in declaration
+    /// order, emitting <c>builder.Append</c> calls for the key/value of each
+    /// property, comma-separated. Sensitive properties get the redacted
+    /// expression; non-sensitive use <c>builder.Append(this.X);</c> so the
+    /// BCL's per-type overloads (string, int, enum, etc.) kick in for free.
+    /// </summary>
+    private static void WriteRedactedMemberAppends(IndentedTextWriter writer, ConfigSectionModel model)
+    {
+        var first = true;
+        foreach (var prop in model.Properties)
+        {
+            // Key literal: ", PropName = " or "PropName = " for the first.
+            writer.Write("builder.Append(\"");
+            if (!first)
+            {
+                writer.Write(", ");
+            }
+            writer.Write(prop.Name);
+            writer.WriteLine(" = \");");
+            first = false;
+
+            if (prop.IsSensitive)
+            {
+                // Reference-type or nullable-value-type: differentiate null
+                // from populated so debuggers can tell missing-config apart
+                // from set-but-redacted. Non-nullable value types can't be
+                // null at the CLR level, so always render as "***".
+                if (prop.IsReferenceType || prop.IsNullableValueType)
+                {
+                    writer.Write("builder.Append(this.");
+                    writer.Write(prop.Name);
+                    writer.WriteLine(" is null ? \"null\" : \"***\");");
+                }
+                else
+                {
+                    writer.WriteLine("builder.Append(\"***\");");
+                }
+            }
+            else
+            {
+                writer.Write("builder.Append(this.");
+                writer.Write(prop.Name);
+                writer.WriteLine(");");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Emits an explicit <c>IReadOnlyDictionary&lt;string, object?&gt;</c>
+    /// implementation on the partial type so structured-logging
+    /// destructurers render <c>[Sensitive]</c> properties as redacted values
+    /// without any reflection over the type.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// All eight interface members are explicitly implemented, so the user's
+    /// own API surface is untouched: <c>config.Conn</c> still returns the
+    /// real value, <c>foreach (var kvp in config)</c> still fails to compile,
+    /// and record equality / cloning / <c>GetHashCode</c> are unaffected.
+    /// The interface methods are only reachable via an explicit cast to
+    /// <c>IReadOnlyDictionary&lt;string, object?&gt;</c> — which is exactly
+    /// what Serilog, <c>System.Text.Json</c>'s dictionary converter, MEL's
+    /// <c>JsonConsoleFormatter</c>, NLog's JSON layouts, and OpenTelemetry's
+    /// JSON exporters do when they detect the interface on an object.
+    /// </para>
+    /// <para>
+    /// Value reads inside each member are direct property accesses with the
+    /// same redaction rule as <see cref="WriteRedactedMemberAppends"/>:
+    /// sensitive reference / nullable-value properties return
+    /// <c>null</c> or <c>"***"</c>; sensitive non-nullable values always
+    /// return <c>"***"</c>; non-sensitive properties pass through as-is
+    /// (boxed by the compiler to <see cref="object"/> on assignment).
+    /// </para>
+    /// </remarks>
+    private static void WriteDictionaryInterfaceImplementation(IndentedTextWriter writer, ConfigSectionModel model)
+    {
+        var count = model.Properties.Length;
+
+        // Header comment in the generated source so anyone inspecting the
+        // output understands why a config record suddenly implements a
+        // dictionary interface.
+        writer.WriteLine("// ── IReadOnlyDictionary<string, object?> implementation (explicit).");
+        writer.WriteLine("//    Drives transparent redaction in structured-logging destructurers that");
+        writer.WriteLine("//    detect the interface (Serilog, System.Text.Json, NLog, etc.) without");
+        writer.WriteLine("//    any reflection on the type's properties.");
+
+        // Static string[] backing the Keys enumerable. One allocation per
+        // assembly load — shared across every instance of the type.
+        writer.WriteLine("private static readonly string[] _cb_Keys = new[]");
+        writer.WriteLine("{");
+        writer.Indent++;
+        foreach (var prop in model.Properties)
+        {
+            writer.Write('"');
+            writer.Write(prop.Name);
+            writer.WriteLine("\",");
+        }
+        writer.Indent--;
+        writer.WriteLine("};");
+        writer.WriteLine();
+
+        // Count — compile-time constant, no iteration.
+        writer.Write("int global::System.Collections.Generic.IReadOnlyCollection<global::System.Collections.Generic.KeyValuePair<string, object?>>.Count => ");
+        writer.Write(count.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        writer.WriteLine(";");
+        writer.WriteLine();
+
+        // Indexer — switch over property names, redaction inline.
+        writer.WriteLine("object? global::System.Collections.Generic.IReadOnlyDictionary<string, object?>.this[string key] => key switch");
+        writer.WriteLine("{");
+        writer.Indent++;
+        foreach (var prop in model.Properties)
+        {
+            writer.Write('"');
+            writer.Write(prop.Name);
+            writer.Write("\" => ");
+            writer.Write(RedactedValueExpression(prop));
+            writer.WriteLine(",");
+        }
+        writer.WriteLine("_ => throw new global::System.Collections.Generic.KeyNotFoundException(key),");
+        writer.Indent--;
+        writer.WriteLine("};");
+        writer.WriteLine();
+
+        // Keys — returns the static array directly.
+        writer.WriteLine("global::System.Collections.Generic.IEnumerable<string> global::System.Collections.Generic.IReadOnlyDictionary<string, object?>.Keys => _cb_Keys;");
+        writer.WriteLine();
+
+        // Values — iterator; can't cache because values are per-instance.
+        writer.WriteLine("global::System.Collections.Generic.IEnumerable<object?> global::System.Collections.Generic.IReadOnlyDictionary<string, object?>.Values");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.WriteLine("get");
+        writer.WriteLine("{");
+        writer.Indent++;
+        foreach (var prop in model.Properties)
+        {
+            writer.Write("yield return ");
+            writer.Write(RedactedValueExpression(prop));
+            writer.WriteLine(";");
+        }
+        writer.Indent--;
+        writer.WriteLine("}");
+        writer.Indent--;
+        writer.WriteLine("}");
+        writer.WriteLine();
+
+        // ContainsKey — bare switch expression with all property names as
+        // an `or` pattern. Cheaper than an Array.IndexOf lookup for small
+        // arrays (our typical case).
+        writer.Write("bool global::System.Collections.Generic.IReadOnlyDictionary<string, object?>.ContainsKey(string key) => key is ");
+        var firstKey = true;
+        foreach (var prop in model.Properties)
+        {
+            if (!firstKey)
+            {
+                writer.Write(" or ");
+            }
+
+            writer.Write('"');
+            writer.Write(prop.Name);
+            writer.Write('"');
+            firstKey = false;
+        }
+
+        writer.WriteLine(";");
+        writer.WriteLine();
+
+        // TryGetValue — same redaction rule as the indexer, but with an
+        // out-parameter assignment instead of throwing for unknown keys.
+        writer.WriteLine("bool global::System.Collections.Generic.IReadOnlyDictionary<string, object?>.TryGetValue(string key, out object? value)");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.WriteLine("switch (key)");
+        writer.WriteLine("{");
+        writer.Indent++;
+        foreach (var prop in model.Properties)
+        {
+            writer.Write("case \"");
+            writer.Write(prop.Name);
+            writer.Write("\": value = ");
+            writer.Write(RedactedValueExpression(prop));
+            writer.WriteLine("; return true;");
+        }
+
+        writer.WriteLine("default: value = null; return false;");
+        writer.Indent--;
+        writer.WriteLine("}");
+        writer.Indent--;
+        writer.WriteLine("}");
+        writer.WriteLine();
+
+        // Generic GetEnumerator — iterator yielding one KVP per property.
+        writer.WriteLine("global::System.Collections.Generic.IEnumerator<global::System.Collections.Generic.KeyValuePair<string, object?>> global::System.Collections.Generic.IEnumerable<global::System.Collections.Generic.KeyValuePair<string, object?>>.GetEnumerator()");
+        writer.WriteLine("{");
+        writer.Indent++;
+        foreach (var prop in model.Properties)
+        {
+            writer.Write("yield return new global::System.Collections.Generic.KeyValuePair<string, object?>(\"");
+            writer.Write(prop.Name);
+            writer.Write("\", ");
+            writer.Write(RedactedValueExpression(prop));
+            writer.WriteLine(");");
+        }
+        writer.Indent--;
+        writer.WriteLine("}");
+        writer.WriteLine();
+
+        // Non-generic GetEnumerator — delegates via cast. Simple and correct.
+        writer.WriteLine("global::System.Collections.IEnumerator global::System.Collections.IEnumerable.GetEnumerator()");
+        writer.Indent++;
+        writer.WriteLine("=> ((global::System.Collections.Generic.IEnumerable<global::System.Collections.Generic.KeyValuePair<string, object?>>)this).GetEnumerator();");
+        writer.Indent--;
+    }
+
+    /// <summary>
+    /// Returns the emitted C# expression that produces the redacted (or raw)
+    /// value for <paramref name="prop"/>: <c>"***"</c> when the property is
+    /// non-nullable-value-type and sensitive; a null-safe ternary when the
+    /// property is reference-type or nullable-value-type and sensitive; a
+    /// direct <c>this.X</c> access when the property is not sensitive.
+    /// Used by the dictionary interface members to keep the per-property
+    /// redaction rule in one place.
+    /// </summary>
+    private static string RedactedValueExpression(ConfigPropertyModel prop)
+    {
+        if (!prop.IsSensitive)
+        {
+            return "this." + prop.Name;
+        }
+
+        if (prop.IsReferenceType || prop.IsNullableValueType)
+        {
+            return "this." + prop.Name + " is null ? null : \"***\"";
+        }
+
+        return "\"***\"";
     }
 
     /// <summary>

@@ -69,6 +69,13 @@ public sealed class ConfigBoundGenerator : IIncrementalGenerator
             ctx.AddSource(
                 AttributeSource.OptionsFactoryHintName,
                 SourceText.From(AttributeSource.OptionsFactorySource, Encoding.UTF8));
+
+            // [Sensitive] — opt-in property marker for ToString() redaction.
+            // Same post-init emission as ConfigSectionAttribute so consumers
+            // need no runtime package reference to use it.
+            ctx.AddSource(
+                AttributeSource.SensitiveAttributeHintName,
+                SourceText.From(AttributeSource.SensitiveAttributeSource, Encoding.UTF8));
         });
 
         // ── Step 2: find every type annotated with [ConfigSection]. The

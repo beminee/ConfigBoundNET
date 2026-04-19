@@ -4,7 +4,7 @@
 //     Changes to this file will be lost when the generator re-runs.
 // </auto-generated>
 #nullable enable
-#pragma warning disable CS1591
+#pragma warning disable CS1591, CA1710
 
 namespace ConfigBoundNET;
 

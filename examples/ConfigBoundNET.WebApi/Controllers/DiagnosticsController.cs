@@ -7,21 +7,31 @@ using Microsoft.Extensions.Options;
 namespace ConfigBoundNET.WebApi.Controllers;
 
 /// <summary>
-/// Diagnostic endpoint that exposes the current (redacted) configuration.
+/// Diagnostic endpoint that exposes the current configuration.
 /// Demonstrates injecting <see cref="IOptions{TOptions}"/> and
-/// <see cref="IOptionsMonitor{TOptions}"/> into a controller.
+/// <see cref="IOptionsMonitor{TOptions}"/> into a controller — and the fact
+/// that <c>[Sensitive]</c>-marked properties redact automatically through
+/// both <see cref="System.Text.Json"/> (the HTTP JSON response) and Serilog
+/// <c>{@X}</c> templates (the structured log lines).
 /// </summary>
 /// <remarks>
 /// <para>
-/// In a real application this controller would be behind an authorization
-/// policy. Here it's open so you can <c>curl http://localhost:5000/diagnostics</c>
-/// and see the bound values immediately.
+/// The entire payload body is built by returning the config records
+/// <em>directly</em> — no hand-rolled <c>Redact()</c> helper, no anonymous
+/// copy-object. ConfigBoundNET's generated
+/// <c>IReadOnlyDictionary&lt;string, object?&gt;</c> implementation on each
+/// <c>[Sensitive]</c>-bearing type routes STJ through the redacted dictionary
+/// path, so the JSON response already has <c>"***"</c> in place of secrets.
 /// </para>
 /// <para>
-/// <see cref="IOptions{TOptions}"/> is a singleton snapshot — it reads once
-/// and caches. <see cref="IOptionsMonitor{TOptions}"/> re-reads on every
-/// access if the underlying <c>IConfiguration</c> has changed (e.g.
-/// <c>appsettings.json</c> was edited while the app was running).
+/// The <c>_logger.LogInformation("...{@X}", ...)</c> call then proves the same
+/// story for Serilog: the <c>{@X}</c> destructurer sees our interface, walks
+/// it, and emits redacted values in the structured log.
+/// </para>
+/// <para>
+/// In a real application this controller would be behind an authorization
+/// policy. Here it's open so you can <c>curl http://localhost:5000/diagnostics</c>
+/// and watch the redaction work.
 /// </para>
 /// </remarks>
 [ApiController]
@@ -33,24 +43,28 @@ public sealed class DiagnosticsController : ControllerBase
     private readonly IOptionsMonitor<EmailConfig> _email;
     private readonly IOptions<CorsConfig> _cors;
     private readonly IOptionsMonitor<RateLimitingConfig> _rateLimiting;
+    private readonly ILogger<DiagnosticsController> _logger;
 
     public DiagnosticsController(
         IOptions<DatabaseConfig> db,
         IOptions<AuthConfig> auth,
         IOptionsMonitor<EmailConfig> email,
         IOptions<CorsConfig> cors,
-        IOptionsMonitor<RateLimitingConfig> rateLimiting)
+        IOptionsMonitor<RateLimitingConfig> rateLimiting,
+        ILogger<DiagnosticsController> logger)
     {
         _db = db;
         _auth = auth;
         _email = email;
         _cors = cors;
         _rateLimiting = rateLimiting;
+        _logger = logger;
     }
 
     /// <summary>
-    /// Returns a redacted snapshot of every bound configuration section.
-    /// Sensitive values are masked so this endpoint is safe to log.
+    /// Returns every bound configuration section. Sensitive values render as
+    /// <c>"***"</c> transparently via the generated
+    /// <c>IReadOnlyDictionary&lt;string, object?&gt;</c> implementation.
     /// </summary>
     [HttpGet]
     public IActionResult Get()
@@ -61,55 +75,24 @@ public sealed class DiagnosticsController : ControllerBase
         var cors = _cors.Value;
         var rl = _rateLimiting.CurrentValue;
 
+        // Structured log: {@X} triggers Serilog's destructuring, which sees
+        // our IReadOnlyDictionary<string, object?> implementation and
+        // renders each sensitive property as "***" — no policy, no
+        // attribute, no custom formatter. Check the console output.
+        _logger.LogInformation(
+            "Diagnostics request: {@Database} {@Auth} {@Email}",
+            db, auth, email);
+
+        // Return the configs directly. ASP.NET Core's default JSON formatter
+        // delegates to STJ; STJ picks the ReadOnlyDictionaryConverter for
+        // each [Sensitive]-bearing type; sensitive values emit as "***".
         return Ok(new
         {
-            Database = new
-            {
-                ConnectionString = Redact(db.ConnectionString),
-                db.CommandTimeoutSeconds,
-                db.MaxPoolSize,
-                db.EnableRetry,
-                Retry = db.Retry is not null
-                    ? new { db.Retry.MaxAttempts, db.Retry.BackoffSeconds }
-                    : null,
-            },
-            Auth = new
-            {
-                JwtSecret = Redact(auth.JwtSecret),
-                auth.Issuer,
-                auth.Audience,
-                auth.TokenLifetimeMinutes,
-                auth.RefreshTokenLifetimeDays,
-            },
-            Email = new
-            {
-                email.SmtpHost,
-                email.SmtpPort,
-                email.SenderAddress,
-                email.SenderDisplayName,
-                email.UseTls,
-                Username = email.Username is not null ? "***" : "(not set)",
-                Password = email.Password is not null ? "***" : "(not set)",
-            },
-            Cors = new
-            {
-                cors.AllowedOrigins,
-                cors.AllowedMethods,
-                cors.AllowedHeaders,
-                cors.ExposedHeaders,
-                cors.AllowCredentials,
-                cors.PreflightMaxAgeSeconds,
-            },
-            RateLimiting = new
-            {
-                rl.RequestsPerMinute,
-                rl.BurstSize,
-                WhitelistedIps = rl.WhitelistedIps ?? "(none)",
-            },
+            Database = db,
+            Auth = auth,
+            Email = email,
+            Cors = cors,
+            RateLimiting = rl,
         });
     }
-
-    /// <summary>Masks everything except the first 4 characters.</summary>
-    private static string Redact(string value) =>
-        value.Length <= 4 ? "****" : string.Concat(value.AsSpan(0, 4), "****");
 }

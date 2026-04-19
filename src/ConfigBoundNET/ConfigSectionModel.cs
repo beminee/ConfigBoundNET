@@ -124,6 +124,15 @@ internal enum ConfigTypeKind
 /// <see langword="true"/> when the property type is <c>T[]</c> (needs <c>.ToArray()</c>
 /// after building the list); <see langword="false"/> for <c>List&lt;T&gt;</c> and interfaces.
 /// </param>
+/// <param name="IsSensitive">
+/// <see langword="true"/> when the property is decorated with
+/// <c>[Sensitive]</c>. Causes the emitter to redact this property's value to
+/// <c>"***"</c> in the generated <c>PrintMembers</c> (records) or
+/// <c>ToString</c> (classes) override, provided at least one property on the
+/// type is sensitive. Default <see langword="false"/> — types with zero
+/// sensitive properties emit no redacted override and keep the
+/// compiler-synthesized record <c>ToString</c>.
+/// </param>
 internal sealed record ConfigPropertyModel(
     string Name,
     bool IsRequired,
@@ -137,7 +146,8 @@ internal sealed record ConfigPropertyModel(
     EquatableArray<DataAnnotationModel> DataAnnotations,
     BindingStrategy CollectionElementStrategy,
     string? CollectionElementKeyword,
-    bool IsCollectionArray) : IEquatable<ConfigPropertyModel>;
+    bool IsCollectionArray,
+    bool IsSensitive) : IEquatable<ConfigPropertyModel>;
 
 /// <summary>
 /// How the generated, reflection-free binder should read a property out of an
@@ -427,6 +437,7 @@ internal static class ModelBuilder
             var isReferenceType = property.Type.IsReferenceType;
             var isString = property.Type.SpecialType == SpecialType.System_String;
             var isRequired = IsRequired(property);
+            var isSensitive = HasSensitiveAttribute(property);
 
             // Classify how this property will be bound. Unsupported types
             // produce a CB0010 warning and are skipped at emit time, so the
@@ -468,7 +479,8 @@ internal static class ModelBuilder
                     : new EquatableArray<DataAnnotationModel>(annotations.ToArray()),
                 CollectionElementStrategy: classification.CollectionElementStrategy,
                 CollectionElementKeyword: classification.CollectionElementKeyword,
-                IsCollectionArray: classification.IsCollectionArray));
+                IsCollectionArray: classification.IsCollectionArray,
+                IsSensitive: isSensitive));
         }
 
         if (properties.Count == 0)
@@ -850,6 +862,24 @@ internal static class ModelBuilder
         foreach (var attr in type.GetAttributes())
         {
             if (attr.AttributeClass?.ToDisplayString() == "ConfigBoundNET.ConfigSectionAttribute")
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when the property carries
+    /// <c>[Sensitive]</c>. Drives the emitter's decision to produce a
+    /// redacted <c>PrintMembers</c> / <c>ToString</c> override.
+    /// </summary>
+    private static bool HasSensitiveAttribute(IPropertySymbol property)
+    {
+        foreach (var attr in property.GetAttributes())
+        {
+            if (attr.AttributeClass?.ToDisplayString() == "ConfigBoundNET.SensitiveAttribute")
             {
                 return true;
             }
