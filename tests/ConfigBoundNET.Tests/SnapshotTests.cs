@@ -587,6 +587,77 @@ public sealed class SnapshotTests
         return VerifyDriver(Source);
     }
 
+    // ── Aggregate registration ───────────────────────────────────────────
+
+    [Fact]
+    public Task AggregateRegistration_multiple_types()
+    {
+        // Two [ConfigSection] types in different namespaces. The aggregate
+        // emitter must emit a single AddConfigBoundSections file in
+        // ConfigBoundNET namespace, with guarded calls for both types in
+        // deterministic alphabetical order.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp.Api
+            {
+                [ConfigSection("Api")]
+                public partial record ApiConfig
+                {
+                    public string BaseUrl { get; init; } = default!;
+                }
+            }
+
+            namespace MyApp.Db
+            {
+                [ConfigSection("Db")]
+                public partial record DbConfig
+                {
+                    public string Conn { get; init; } = default!;
+                }
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
+    [Fact]
+    public Task AggregateRegistration_zero_types()
+    {
+        // Compilation with no [ConfigSection] types — the aggregate method
+        // should still be emitted with an empty body so callers can always
+        // write services.AddConfigBoundSections(config) unconditionally.
+        const string Source = """
+            namespace MyApp;
+
+            public sealed class NotAConfigType
+            {
+                public int Value { get; set; }
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
+    [Fact]
+    public Task AggregateRegistration_with_global_namespace_type()
+    {
+        // A type in the global namespace must emit "global::TypeName" without
+        // a leading "global::Namespace.". Pins the namespace-null branch of
+        // the emitter.
+        const string Source = """
+            using ConfigBoundNET;
+
+            [ConfigSection("App")]
+            public partial record AppConfig
+            {
+                public string Name { get; init; } = default!;
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
     // ── Custom validation hook ───────────────────────────────────────────
 
     [Fact]

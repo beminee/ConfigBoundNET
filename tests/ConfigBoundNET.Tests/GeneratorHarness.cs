@@ -284,4 +284,84 @@ internal static class GeneratorHarness
         var valueProperty = optionsClosed.GetProperty("Value")!;
         return valueProperty.GetValue(optionsInstance)!;
     }
+
+    /// <summary>
+    /// Compiles <paramref name="source"/>, runs the generator, and invokes the
+    /// assembly-wide <c>ConfigBoundNET.ConfigBoundSectionRegistrations
+    /// .AddConfigBoundSections(services, configuration)</c> method. Returns
+    /// both the assembly (so the caller can locate types by name) and the
+    /// populated <see cref="IServiceCollection"/> (so the caller can assert on
+    /// what registrations did — or did not — happen, which matters for the
+    /// <c>.Exists()</c>-gate behaviour).
+    /// </summary>
+    public static (Assembly Assembly, IServiceCollection Services) CompileAndAggregate(string source, IDictionary<string, string?> configValues)
+    {
+        var parseOptions = new CSharpParseOptions(LanguageVersion.Latest);
+        var syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
+
+        var compilation = CSharpCompilation.Create(
+            assemblyName: "ConfigBoundNET.Tests.Aggregate." + System.Guid.NewGuid().ToString("N"),
+            syntaxTrees: new[] { syntaxTree },
+            references: References,
+            options: new CSharpCompilationOptions(
+                OutputKind.DynamicallyLinkedLibrary,
+                nullableContextOptions: NullableContextOptions.Enable));
+
+        var driver = CSharpGeneratorDriver.Create(
+            generators: new[] { new ConfigBoundGenerator().AsSourceGenerator() },
+            additionalTexts: ImmutableArray<AdditionalText>.Empty,
+            parseOptions: parseOptions,
+            optionsProvider: null);
+
+        driver = (CSharpGeneratorDriver)driver.RunGeneratorsAndUpdateCompilation(
+            compilation,
+            out var augmentedCompilation,
+            out _);
+
+        using var peStream = new MemoryStream();
+        var emitResult = augmentedCompilation.Emit(peStream);
+        if (!emitResult.Success)
+        {
+            var errors = string.Join(
+                System.Environment.NewLine,
+                emitResult.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error));
+            throw new System.InvalidOperationException(
+                "Generator output failed to compile:" + System.Environment.NewLine + errors);
+        }
+
+        peStream.Position = 0;
+        var assembly = Assembly.Load(peStream.ToArray());
+
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(configValues)
+            .Build();
+
+        var aggregateType = assembly.GetTypes()
+            .Single(t => t.Name == "ConfigBoundSectionRegistrations");
+        var aggregateMethod = aggregateType.GetMethod(
+            "AddConfigBoundSections",
+            BindingFlags.Public | BindingFlags.Static)!;
+
+        var services = new ServiceCollection();
+        aggregateMethod.Invoke(null, new object[] { services, configuration });
+        return (assembly, services);
+    }
+
+    /// <summary>
+    /// Convenience wrapper around <see cref="CompileAndAggregate"/> that
+    /// resolves <see cref="IOptions{T}.Value"/> for the requested
+    /// <paramref name="typeName"/>. Use the raw tuple overload when a test
+    /// needs to inspect the service collection itself.
+    /// </summary>
+    public static object CompileAndBindViaAggregate(string source, string typeName, IDictionary<string, string?> configValues)
+    {
+        var (assembly, services) = CompileAndAggregate(source, configValues);
+        var sp = services.BuildServiceProvider();
+
+        var optionsType = assembly.GetTypes().Single(t => t.Name == typeName);
+        var optionsClosed = typeof(IOptions<>).MakeGenericType(optionsType);
+        var optionsInstance = sp.GetRequiredService(optionsClosed)!;
+        var valueProperty = optionsClosed.GetProperty("Value")!;
+        return valueProperty.GetValue(optionsInstance)!;
+    }
 }

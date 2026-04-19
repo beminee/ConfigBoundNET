@@ -1097,6 +1097,107 @@ public sealed class BindingTests
         Assert.Equal(5, GetProp(nested, "MaxAttempts"));
     }
 
+    // ── Aggregate registration tests ─────────────────────────────────────
+
+    [Fact]
+    public void AddConfigBoundSections_registers_every_present_section()
+    {
+        // Two [ConfigSection] types, both sections present in config. The
+        // aggregate extension must register both and bind both correctly.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+            }
+
+            [ConfigSection("Api")]
+            public partial record ApiConfig
+            {
+                public string BaseUrl { get; init; } = default!;
+            }
+            """;
+
+        var dbBound = GeneratorHarness.CompileAndBindViaAggregate(
+            Source,
+            "DbConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "Server=localhost",
+                ["Api:BaseUrl"] = "https://api.example/",
+            });
+
+        Assert.Equal("Server=localhost", GetProp(dbBound, "Conn"));
+
+        // Second resolve against the aggregate path too, to prove both types
+        // were actually registered.
+        var apiBound = GeneratorHarness.CompileAndBindViaAggregate(
+            Source,
+            "ApiConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "Server=localhost",
+                ["Api:BaseUrl"] = "https://api.example/",
+            });
+
+        Assert.Equal("https://api.example/", GetProp(apiBound, "BaseUrl"));
+    }
+
+    [Fact]
+    public void AddConfigBoundSections_skips_type_whose_section_is_absent()
+    {
+        // Only "Db" is present in config; "__tenant__" is absent. The
+        // .Exists() gate in the generated aggregate skips AddTenantConfig
+        // entirely, so TenantConfig's validator never fires against an empty
+        // section. This is the whole point of the gate: nested-only types
+        // with throwaway section names don't produce spurious
+        // "[__tenant__:Url] is required" failures at startup.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+            }
+
+            [ConfigSection("__tenant__")]
+            public partial record TenantConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        // Run the aggregate, inspect the service collection afterwards.
+        var (assembly, services) = GeneratorHarness.CompileAndAggregate(
+            Source,
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Db:Conn"] = "Server=localhost",
+            });
+
+        var dbConfigType = assembly.GetTypes().Single(t => t.Name == "DbConfig");
+        var tenantConfigType = assembly.GetTypes().Single(t => t.Name == "TenantConfig");
+
+        var dbValidatorServiceType = typeof(Microsoft.Extensions.Options.IValidateOptions<>)
+            .MakeGenericType(dbConfigType);
+        var tenantValidatorServiceType = typeof(Microsoft.Extensions.Options.IValidateOptions<>)
+            .MakeGenericType(tenantConfigType);
+
+        // DbConfig's section exists → its validator is registered.
+        Assert.Contains(services, sd => sd.ServiceType == dbValidatorServiceType);
+
+        // TenantConfig's section is absent → the aggregate skipped it, so
+        // its validator was never registered.
+        Assert.DoesNotContain(services, sd => sd.ServiceType == tenantValidatorServiceType);
+    }
+
     /// <summary>
     /// Reflection helper that mirrors what a real consumer would write
     /// statically as <c>options.Conn</c>. Used here only because the test type

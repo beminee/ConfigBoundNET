@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using ConfigBoundNET;
 using ConfigBoundNET.AotTests;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -34,7 +35,11 @@ var configuration = new ConfigurationBuilder()
     .Build();
 
 var services = new ServiceCollection();
-services.AddDbConfig(configuration);
+// Exercise the assembly-wide aggregate extension instead of calling
+// services.AddDbConfig(configuration) directly — this proves the generated
+// AddConfigBoundSections path is AOT-clean (no IL2026 / IL3050 warnings
+// under IsAotCompatible=true + TreatWarningsAsErrors).
+services.AddConfigBoundSections(configuration);
 
 using var sp = services.BuildServiceProvider();
 var db = sp.GetRequiredService<IOptions<DbConfig>>().Value;

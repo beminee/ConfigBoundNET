@@ -38,6 +38,22 @@ internal sealed record ConfigSectionModel(
     string HintName);
 
 /// <summary>
+/// Minimal equatable projection of a <see cref="ConfigSectionModel"/> used by
+/// the assembly-wide <c>AddConfigBoundSections</c> emitter. Carries just the
+/// type identity (namespace + simple name) that the aggregate registration
+/// method needs to call <c>{Namespace}.{TypeName}ServiceCollectionExtensions
+/// .Add{TypeName}(services, configuration)</c> via fully qualified syntax.
+/// <para>
+/// Deliberately excludes per-type detail (properties, DataAnnotations,
+/// SectionName) so that edits to those fields do not invalidate the
+/// aggregate pipeline's cache — adding a <c>[Range]</c> attribute on one
+/// property in one <c>[ConfigSection]</c> type must not cause the
+/// assembly-wide aggregate file to re-emit.
+/// </para>
+/// </summary>
+internal sealed record AggregateEntry(string? Namespace, string TypeName);
+
+/// <summary>
 /// Minimal classification of the declared type so the emitter can pick the
 /// right <c>partial record</c> / <c>partial class</c> keyword when extending it.
 /// </summary>
