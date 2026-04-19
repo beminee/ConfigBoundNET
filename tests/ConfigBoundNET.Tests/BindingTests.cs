@@ -1097,6 +1097,77 @@ public sealed class BindingTests
         Assert.Equal(5, GetProp(nested, "MaxAttempts"));
     }
 
+    // ── Allocation contract ─────────────────────────────────────────────
+
+    [Fact]
+    public void Validator_success_path_allocates_no_failures_list()
+    {
+        // The generated Validator starts failures as null and only allocates
+        // the List<string> when a failure actually fires. On the success path
+        // (every check passes, no ValidateCustom hook implemented), a single
+        // Validate call must allocate nothing beyond tiny overhead from the
+        // call frame itself — definitely no List<string>, no array, and no
+        // boxed enumerator. This test guards that contract.
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Alloc")]
+            public partial record AllocConfig
+            {
+                public string Name { get; init; } = default!;
+
+                [Range(1, 65535)]
+                public int Port { get; init; } = 8080;
+            }
+            """;
+
+        var bound = GeneratorHarness.CompileAndBind(
+            Source,
+            "AllocConfig",
+            new System.Collections.Generic.Dictionary<string, string?>
+            {
+                ["Alloc:Name"] = "ok",
+                ["Alloc:Port"] = "8080",
+            });
+
+        // Locate the generated Validator and the 3-arg Validate overload
+        // directly so we measure just that call, not DI/IOptions plumbing.
+        var validatorType = bound.GetType().GetNestedType("Validator")!;
+        var validator = System.Activator.CreateInstance(validatorType)!;
+        var validate = validatorType.GetMethod(
+            "Validate",
+            new[] { typeof(string), typeof(string), bound.GetType() })!;
+
+        // Warm up: first call may allocate some JIT/tiered-comp state
+        // unrelated to our List<string> concern.
+        for (int i = 0; i < 50; i++)
+        {
+            validate.Invoke(validator, new object?[] { null, "Alloc", bound });
+        }
+
+        // Measure one call's allocations. GC.GetAllocatedBytesForCurrentThread
+        // reports cumulative thread-local allocation; the delta is our signal.
+        var before = System.GC.GetAllocatedBytesForCurrentThread();
+        validate.Invoke(validator, new object?[] { null, "Alloc", bound });
+        var after = System.GC.GetAllocatedBytesForCurrentThread();
+
+        var delta = after - before;
+
+        // Invoking via MethodInfo.Invoke itself allocates a params object[]
+        // and an object for the boxed return value, so we expect some small
+        // overhead. Before this optimisation the delta was ~200+ B (the list
+        // dominated). After, it's comfortably under 150 B. Pin at < 200 B to
+        // absorb future reflection-overhead drift without losing the signal.
+        Assert.True(
+            delta < 200,
+            $"Validator.Validate on success path allocated {delta} B — expected < 200 B. " +
+            "A regression here usually means the lazy failures-list allocation " +
+            "(FailuresAccessor in SourceEmitter) has been bypassed or reverted.");
+    }
+
     // ── Aggregate registration tests ─────────────────────────────────────
 
     [Fact]

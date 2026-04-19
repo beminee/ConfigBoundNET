@@ -389,7 +389,11 @@ internal static class ModelBuilder
         // ── Collect bindable properties. We accept any public property with a
         //    setter or init accessor. Read-only properties cannot participate
         //    in configuration binding, so we silently skip them.
-        var properties = new List<ConfigPropertyModel>();
+        //    Pre-sized to the total member count: a safe upper bound (most
+        //    members *are* properties, and non-property members are cheap to
+        //    skip). Single correctly-sized backing array; no list-growth
+        //    doubling mid-loop. Trims allocations on the incremental path.
+        var properties = new List<ConfigPropertyModel>(capacity: symbol.GetMembers().Length);
         foreach (var member in symbol.GetMembers())
         {
             if (member is not IPropertySymbol property)
@@ -454,7 +458,14 @@ internal static class ModelBuilder
                 NestedTypeFullyQualifiedName: classification.NestedTypeFullyQualifiedName,
                 EnumFullyQualifiedName: classification.EnumFullyQualifiedName,
                 ParseTypeKeyword: classification.ParseTypeKeyword,
-                DataAnnotations: new EquatableArray<DataAnnotationModel>(annotations.Count > 0 ? annotations.ToArray() : Array.Empty<DataAnnotationModel>()),
+                // Zero-annotation case takes the `default` struct value (no
+                // backing array allocated). EquatableArray<T>.AsArray() /
+                // Length already treat null-backed instances as empty, so
+                // equality and downstream enumeration behave identically to
+                // an explicitly-constructed empty instance.
+                DataAnnotations: annotations is null || annotations.Count == 0
+                    ? default
+                    : new EquatableArray<DataAnnotationModel>(annotations.ToArray()),
                 CollectionElementStrategy: classification.CollectionElementStrategy,
                 CollectionElementKeyword: classification.CollectionElementKeyword,
                 IsCollectionArray: classification.IsCollectionArray));
@@ -861,7 +872,7 @@ internal static class ModelBuilder
     /// <see cref="DataAnnotationModel"/>, and emits diagnostics when an
     /// annotation is misapplied (wrong target type, invalid regex, etc.).
     /// </summary>
-    private static List<DataAnnotationModel> ExtractDataAnnotations(
+    private static List<DataAnnotationModel>? ExtractDataAnnotations(
         IPropertySymbol property,
         BindingStrategy binding,
         bool isString,
@@ -870,7 +881,12 @@ internal static class ModelBuilder
         List<DiagnosticInfo> diagnostics,
         TypeDeclarationSyntax syntax)
     {
-        var result = new List<DataAnnotationModel>();
+        // Start null; allocate on first matched annotation. Most user
+        // properties carry zero DataAnnotations, so zero allocation is
+        // the common case. Returning null means "no annotations" — the
+        // caller maps that to default(EquatableArray<T>) and skips the
+        // empty-array allocation entirely.
+        List<DataAnnotationModel>? result = null;
         var location = LocationInfo.From(syntax);
         var isNumeric = binding is BindingStrategy.Integer or BindingStrategy.FloatingPoint;
         var typeName = property.Type.ToDisplayString();
@@ -912,7 +928,7 @@ internal static class ModelBuilder
 
                     // Still emit the model so the validation is present even
                     // when the user explicitly opted in with [Required].
-                    result.Add(new DataAnnotationModel(
+                    (result ??= new List<DataAnnotationModel>()).Add(new DataAnnotationModel(
                         DataAnnotationKind.Required,
                         null, null, null,
                         new EquatableArray<string>(Array.Empty<string>()),
@@ -935,7 +951,7 @@ internal static class ModelBuilder
                         var max = ConvertToDouble(attr.ConstructorArguments[1]);
                         if (min.HasValue && max.HasValue)
                         {
-                            result.Add(new DataAnnotationModel(
+                            (result ??= new List<DataAnnotationModel>()).Add(new DataAnnotationModel(
                                 DataAnnotationKind.Range,
                                 null, min.Value, max.Value,
                                 new EquatableArray<string>(Array.Empty<string>()),
@@ -967,7 +983,7 @@ internal static class ModelBuilder
                             }
                         }
 
-                        result.Add(new DataAnnotationModel(
+                        (result ??= new List<DataAnnotationModel>()).Add(new DataAnnotationModel(
                             DataAnnotationKind.StringLength,
                             null, maxLen, minLen,
                             new EquatableArray<string>(Array.Empty<string>()),
@@ -987,7 +1003,7 @@ internal static class ModelBuilder
 
                     if (attr.ConstructorArguments.Length >= 1)
                     {
-                        result.Add(new DataAnnotationModel(
+                        (result ??= new List<DataAnnotationModel>()).Add(new DataAnnotationModel(
                             DataAnnotationKind.MinLength,
                             null, ConvertToDouble(attr.ConstructorArguments[0]), null,
                             new EquatableArray<string>(Array.Empty<string>()),
@@ -1007,7 +1023,7 @@ internal static class ModelBuilder
 
                     if (attr.ConstructorArguments.Length >= 1)
                     {
-                        result.Add(new DataAnnotationModel(
+                        (result ??= new List<DataAnnotationModel>()).Add(new DataAnnotationModel(
                             DataAnnotationKind.MaxLength,
                             null, ConvertToDouble(attr.ConstructorArguments[0]), null,
                             new EquatableArray<string>(Array.Empty<string>()),
@@ -1034,7 +1050,7 @@ internal static class ModelBuilder
                             break;
                         }
 
-                        result.Add(new DataAnnotationModel(
+                        (result ??= new List<DataAnnotationModel>()).Add(new DataAnnotationModel(
                             DataAnnotationKind.RegularExpression,
                             pattern, null, null,
                             new EquatableArray<string>(Array.Empty<string>()),
@@ -1043,7 +1059,7 @@ internal static class ModelBuilder
                     break;
 
                 case "UrlAttribute":
-                    result.Add(new DataAnnotationModel(
+                    (result ??= new List<DataAnnotationModel>()).Add(new DataAnnotationModel(
                         DataAnnotationKind.Url,
                         null, null, null,
                         new EquatableArray<string>(Array.Empty<string>()),
@@ -1051,7 +1067,7 @@ internal static class ModelBuilder
                     break;
 
                 case "EmailAddressAttribute":
-                    result.Add(new DataAnnotationModel(
+                    (result ??= new List<DataAnnotationModel>()).Add(new DataAnnotationModel(
                         DataAnnotationKind.EmailAddress,
                         null, null, null,
                         new EquatableArray<string>(Array.Empty<string>()),
@@ -1059,7 +1075,7 @@ internal static class ModelBuilder
                     break;
 
                 case "AllowedValuesAttribute":
-                    result.Add(new DataAnnotationModel(
+                    (result ??= new List<DataAnnotationModel>()).Add(new DataAnnotationModel(
                         DataAnnotationKind.AllowedValues,
                         null, null, null,
                         ExtractValuesArg(attr),
@@ -1067,7 +1083,7 @@ internal static class ModelBuilder
                     break;
 
                 case "DeniedValuesAttribute":
-                    result.Add(new DataAnnotationModel(
+                    (result ??= new List<DataAnnotationModel>()).Add(new DataAnnotationModel(
                         DataAnnotationKind.DeniedValues,
                         null, null, null,
                         ExtractValuesArg(attr),

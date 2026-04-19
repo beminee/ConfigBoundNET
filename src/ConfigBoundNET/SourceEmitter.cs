@@ -273,7 +273,11 @@ internal static class SourceEmitter
         writer.WriteLine("}");
         writer.WriteLine();
 
-        writer.WriteLine("var failures = new global::System.Collections.Generic.List<string>();");
+        // List starts null — the success path never allocates. The compound
+        // ??= expression (see FailuresAccessor) creates the list on demand
+        // the first time a failure fires, or the first time a ValidateCustom
+        // hook call site needs a non-null argument.
+        writer.WriteLine("global::System.Collections.Generic.List<string>? failures = null;");
         writer.WriteLine();
 
         // ── Null / whitespace checks for every required property.
@@ -293,7 +297,8 @@ internal static class SourceEmitter
                 writer.WriteLine("))");
                 writer.WriteLine("{");
                 writer.Indent++;
-                writer.Write("failures.Add(\"[\" + path + \":");
+                writer.Write(FailuresAccessor);
+                writer.Write(".Add(\"[\" + path + \":");
                 writer.Write(prop.Name);
                 writer.WriteLine("] is required but was null, empty, or whitespace.\");");
                 writer.Indent--;
@@ -306,7 +311,8 @@ internal static class SourceEmitter
                 writer.WriteLine(" is null)");
                 writer.WriteLine("{");
                 writer.Indent++;
-                writer.Write("failures.Add(\"[\" + path + \":");
+                writer.Write(FailuresAccessor);
+                writer.Write(".Add(\"[\" + path + \":");
                 writer.Write(prop.Name);
                 writer.WriteLine("] is required but was null.\");");
                 writer.Indent--;
@@ -364,14 +370,25 @@ internal static class SourceEmitter
         //      they can produce messages like "[Api:Endpoints:1] ..." that
         //      stay correct at any nesting depth.
         writer.WriteLine();
-        writer.WriteLine("options.ValidateCustom(failures);");
-        writer.WriteLine("options.ValidateCustom(failures, path);");
+        // Each ValidateCustom argument uses the same ??= accessor: if the user
+        // has NOT implemented the partial, the whole call site (argument
+        // evaluation included) is erased by the C# compiler and no allocation
+        // happens. If they have, the ??= forces a non-null list right before
+        // the call so the hook's non-nullable parameter contract is satisfied.
+        writer.Write("options.ValidateCustom(");
+        writer.Write(FailuresAccessor);
+        writer.WriteLine(");");
+        writer.Write("options.ValidateCustom(");
+        writer.Write(FailuresAccessor);
+        writer.WriteLine(", path);");
 
         writer.WriteLine();
-        writer.WriteLine("return failures.Count > 0");
+        // Success when no check fired (failures stayed null) OR when every
+        // allocation-forcing path (e.g. ValidateCustom) ran without adding.
+        writer.WriteLine("return failures is null || failures.Count == 0");
         writer.Indent++;
-        writer.WriteLine("? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)");
-        writer.WriteLine(": global::Microsoft.Extensions.Options.ValidateOptionsResult.Success;");
+        writer.WriteLine("? global::Microsoft.Extensions.Options.ValidateOptionsResult.Success");
+        writer.WriteLine(": global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures);");
         writer.Indent--;
 
         writer.Indent--;
@@ -988,7 +1005,8 @@ internal static class SourceEmitter
         writer.WriteLine(".Failed)");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.AddRange(");
+        writer.Write(FailuresAccessor);
+        writer.Write(".AddRange(");
         writer.Write(resultVar);
         writer.WriteLine(".Failures);");
         writer.Indent--;
@@ -1064,7 +1082,8 @@ internal static class SourceEmitter
         writer.WriteLine(".Failed)");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.AddRange(");
+        writer.Write(FailuresAccessor);
+        writer.Write(".AddRange(");
         writer.Write(resultVar);
         writer.WriteLine(".Failures);");
         writer.Indent--;
@@ -1145,7 +1164,8 @@ internal static class SourceEmitter
         writer.WriteLine(".Failed)");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.AddRange(");
+        writer.Write(FailuresAccessor);
+        writer.Write(".AddRange(");
         writer.Write(resultVar);
         writer.WriteLine(".Failures);");
         writer.Indent--;
@@ -1613,6 +1633,16 @@ internal static class SourceEmitter
     private const string EmailRegexPattern = @"^[^@\s]+@[^@\s]+\.[^@\s]+$";
 
     /// <summary>
+    /// The emitted expression used whenever generated validator code needs to
+    /// mutate the <c>failures</c> list. The local starts out <c>null</c> so
+    /// the success path allocates no <see cref="List{T}"/> at all; this
+    /// compound <c>??=</c> allocates lazily on first failure (or first
+    /// <c>ValidateCustom</c> call site when the user has implemented the
+    /// partial hook, since the hook parameter is non-nullable).
+    /// </summary>
+    private const string FailuresAccessor = "(failures ??= new global::System.Collections.Generic.List<string>())";
+
+    /// <summary>
     /// Separator array reused by <see cref="EmitFailureMessage"/>'s split on
     /// <c>{0}</c>. Cached as a static field so we don't re-allocate on every
     /// annotation (CA1861).
@@ -1727,7 +1757,8 @@ internal static class SourceEmitter
         writer.WriteLine("))");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[\" + path + \":");
+        writer.Write(FailuresAccessor);
+        writer.Write(".Add(\"[\" + path + \":");
         writer.Write(prop.Name);
         writer.WriteLine("] is required but was null, empty, or whitespace.\");");
         writer.Indent--;
@@ -1742,7 +1773,8 @@ internal static class SourceEmitter
         writer.WriteLine(" is null)");
         writer.WriteLine("{");
         writer.Indent++;
-        writer.Write("failures.Add(\"[\" + path + \":");
+        writer.Write(FailuresAccessor);
+        writer.Write(".Add(\"[\" + path + \":");
         writer.Write(prop.Name);
         writer.WriteLine("] is required but was null.\");");
         writer.Indent--;
@@ -1825,7 +1857,8 @@ internal static class SourceEmitter
         // the loop below tolerates zero, one, or many markers.
         var parts = template.Split(FailureMessageSplitSeparator, System.StringSplitOptions.None);
 
-        writer.Write("failures.Add(");
+        writer.Write(FailuresAccessor);
+        writer.Write(".Add(");
         var emittedAny = false;
 
         for (int i = 0; i < parts.Length; i++)

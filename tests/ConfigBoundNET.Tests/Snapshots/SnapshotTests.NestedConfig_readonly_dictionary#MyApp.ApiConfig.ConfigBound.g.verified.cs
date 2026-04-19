@@ -57,11 +57,11 @@ partial record ApiConfig
                 return global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail("ApiConfig instance was null.");
             }
             
-            var failures = new global::System.Collections.Generic.List<string>();
+            global::System.Collections.Generic.List<string>? failures = null;
             
             if (options.Tenants is null)
             {
-                failures.Add("[" + path + ":Tenants] is required but was null.");
+                (failures ??= new global::System.Collections.Generic.List<string>()).Add("[" + path + ":Tenants] is required but was null.");
             }
             if (options.Tenants is not null)
             {
@@ -73,18 +73,18 @@ partial record ApiConfig
                         var _cb_TenantsKvpResult = new global::MyApp.TenantConfig.Validator().Validate(name, _cb_TenantsKvpPath, _cb_TenantsKvp.Value);
                         if (_cb_TenantsKvpResult.Failed)
                         {
-                            failures.AddRange(_cb_TenantsKvpResult.Failures);
+                            (failures ??= new global::System.Collections.Generic.List<string>()).AddRange(_cb_TenantsKvpResult.Failures);
                         }
                     }
                 }
             }
             
-            options.ValidateCustom(failures);
-            options.ValidateCustom(failures, path);
+            options.ValidateCustom((failures ??= new global::System.Collections.Generic.List<string>()));
+            options.ValidateCustom((failures ??= new global::System.Collections.Generic.List<string>()), path);
             
-            return failures.Count > 0
-                ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures)
-                : global::Microsoft.Extensions.Options.ValidateOptionsResult.Success;
+            return failures is null || failures.Count == 0
+                ? global::Microsoft.Extensions.Options.ValidateOptionsResult.Success
+                : global::Microsoft.Extensions.Options.ValidateOptionsResult.Fail(failures);
         }
     }
     
