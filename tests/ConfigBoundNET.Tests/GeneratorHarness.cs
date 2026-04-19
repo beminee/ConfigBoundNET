@@ -289,12 +289,12 @@ internal static class GeneratorHarness
     /// Compiles <paramref name="source"/>, runs the generator, and invokes the
     /// assembly-wide <c>ConfigBoundNET.ConfigBoundSectionRegistrations
     /// .AddConfigBoundSections(services, configuration)</c> method. Returns
-    /// the bound <see cref="IOptions{T}.Value"/> for the requested
-    /// <paramref name="typeName"/>, same shape as <see cref="CompileAndBind"/>
-    /// but exercising the aggregate registration path instead of the per-type
-    /// extension.
+    /// both the assembly (so the caller can locate types by name) and the
+    /// populated <see cref="IServiceCollection"/> (so the caller can assert on
+    /// what registrations did — or did not — happen, which matters for the
+    /// <c>.Exists()</c>-gate behaviour).
     /// </summary>
-    public static object CompileAndBindViaAggregate(string source, string typeName, IDictionary<string, string?> configValues)
+    public static (Assembly Assembly, IServiceCollection Services) CompileAndAggregate(string source, IDictionary<string, string?> configValues)
     {
         var parseOptions = new CSharpParseOptions(LanguageVersion.Latest);
         var syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
@@ -336,8 +336,6 @@ internal static class GeneratorHarness
             .AddInMemoryCollection(configValues)
             .Build();
 
-        // Locate the generated aggregate extension and invoke it. The class
-        // lives in namespace ConfigBoundNET, so use the simple name lookup.
         var aggregateType = assembly.GetTypes()
             .Single(t => t.Name == "ConfigBoundSectionRegistrations");
         var aggregateMethod = aggregateType.GetMethod(
@@ -346,6 +344,18 @@ internal static class GeneratorHarness
 
         var services = new ServiceCollection();
         aggregateMethod.Invoke(null, new object[] { services, configuration });
+        return (assembly, services);
+    }
+
+    /// <summary>
+    /// Convenience wrapper around <see cref="CompileAndAggregate"/> that
+    /// resolves <see cref="IOptions{T}.Value"/> for the requested
+    /// <paramref name="typeName"/>. Use the raw tuple overload when a test
+    /// needs to inspect the service collection itself.
+    /// </summary>
+    public static object CompileAndBindViaAggregate(string source, string typeName, IDictionary<string, string?> configValues)
+    {
+        var (assembly, services) = CompileAndAggregate(source, configValues);
         var sp = services.BuildServiceProvider();
 
         var optionsType = assembly.GetTypes().Single(t => t.Name == typeName);

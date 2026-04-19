@@ -1150,11 +1150,12 @@ public sealed class BindingTests
     [Fact]
     public void AddConfigBoundSections_skips_type_whose_section_is_absent()
     {
-        // Only "Db" is present in config; "Tenant" is absent. The .Exists()
-        // gate means AddTenantConfig is NOT called, so TenantConfig's
-        // validator doesn't fire against an empty section. Resolving
-        // IOptions<TenantConfig> must return a default-valued instance (via
-        // the stock OptionsFactory) rather than throwing a validation error.
+        // Only "Db" is present in config; "__tenant__" is absent. The
+        // .Exists() gate in the generated aggregate skips AddTenantConfig
+        // entirely, so TenantConfig's validator never fires against an empty
+        // section. This is the whole point of the gate: nested-only types
+        // with throwaway section names don't produce spurious
+        // "[__tenant__:Url] is required" failures at startup.
         const string Source = """
             using ConfigBoundNET;
 
@@ -1173,21 +1174,28 @@ public sealed class BindingTests
             }
             """;
 
-        // Only Db:Conn in config; no __tenant__ keys.
-        // If the generator had naively called AddTenantConfig unconditionally,
-        // the validator would fail at IOptions resolution with
-        // "[__tenant__:Url] is required". The .Exists() gate skips the
-        // registration entirely, so resolution gets a default instance.
-        var tenantBound = GeneratorHarness.CompileAndBindViaAggregate(
+        // Run the aggregate, inspect the service collection afterwards.
+        var (assembly, services) = GeneratorHarness.CompileAndAggregate(
             Source,
-            "TenantConfig",
             new System.Collections.Generic.Dictionary<string, string?>
             {
                 ["Db:Conn"] = "Server=localhost",
             });
 
-        // Default-valued (not bound, not validated): Url keeps its default! value.
-        Assert.NotNull(tenantBound);
+        var dbConfigType = assembly.GetTypes().Single(t => t.Name == "DbConfig");
+        var tenantConfigType = assembly.GetTypes().Single(t => t.Name == "TenantConfig");
+
+        var dbValidatorServiceType = typeof(Microsoft.Extensions.Options.IValidateOptions<>)
+            .MakeGenericType(dbConfigType);
+        var tenantValidatorServiceType = typeof(Microsoft.Extensions.Options.IValidateOptions<>)
+            .MakeGenericType(tenantConfigType);
+
+        // DbConfig's section exists → its validator is registered.
+        Assert.Contains(services, sd => sd.ServiceType == dbValidatorServiceType);
+
+        // TenantConfig's section is absent → the aggregate skipped it, so
+        // its validator was never registered.
+        Assert.DoesNotContain(services, sd => sd.ServiceType == tenantValidatorServiceType);
     }
 
     /// <summary>
