@@ -54,10 +54,22 @@ Register it in one line:
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services
-    .AddDbConfig(builder.Configuration)   // <- generated
+    .AddDbConfig(builder.Configuration)   // <- generated per-type
     .AddOptions<DbConfig>()
     .ValidateOnStart();
 ```
+
+Or, if you have a handful of `[ConfigSection]` types and just want them all wired up at once:
+
+```csharp
+// Registers every [ConfigSection] type in the assembly whose section exists
+// in config. Skipped types (e.g. nested-only types with throwaway section
+// names) stay unregistered — call AddXxxConfig(config) explicitly if you
+// need validation to fire against an absent section.
+builder.Services.AddConfigBoundSections(builder.Configuration);
+```
+
+`AddConfigBoundSections` is additive: the per-type `AddXxxConfig` methods are still emitted and still compose with `AddOptions<T>().ValidateOnStart()`.
 
 ConfigBoundNET generates everything else at build time:
 
@@ -468,7 +480,7 @@ ConfigBoundNET is at **v2.0.0** and feature-complete for its core remit: declare
 - [ ] **JSON schema emission for `appsettings.json`.** Emit a `.schema.json` at build time from the `[ConfigSection]` graph (types, required-ness, `[Range]` bounds, enum values, regex patterns). Wired via `"$schema"` in `appsettings.json`, users get IntelliSense and red squiggles on config values — no runtime cost, enormous DX win.
 - [ ] **`[Sensitive]` attribute + redacted `ToString`.** Emit an override that prints `Conn = ***` for marked properties so `logger.LogInformation("{@Config}", opts)` stops leaking secrets. Today users either write this by hand or accept the footgun.
 - [ ] **Analyzer for stringly-typed config access.** When a `[ConfigSection("Db")]` exists, flag `configuration["Db:Conn"]` / `configuration.GetValue<T>("Db:…")` and suggest injecting `IOptions<DbConfig>` instead. Turns the generator into a migration tool for existing codebases.
-- [ ] **`AddConfigBoundSections(IConfiguration)` aggregate registration.** Generate one assembly-wide extension that calls every `AddXxxConfig` in the assembly, so projects with 20 config sections get a single line in `Program.cs`.
+- [x] **`AddConfigBoundSections(IConfiguration)` aggregate registration.** ✅ One assembly-wide extension in the `ConfigBoundNET` namespace calls every per-type `AddXxxConfig` in alphabetical order, each wrapped in a `ConfigurationExtensions.Exists(section)` gate so types whose section is absent (typically nested-only types with throwaway section names) are silently skipped. Additive: per-type extensions are still emitted and still compose with `AddOptions<T>().ValidateOnStart()`. Users who need validation to fire against an absent section call the per-type `AddXxxConfig` directly.
 - [ ] **Propagate XML doc comments.** Forward `///` summaries from the user's config properties onto the generated `Add{Name}Config` method and any public generated members, so IntelliSense keeps working.
 - [ ] **`partial void OnBound(IConfigurationSection section)` hook.** Called after construction and before validation; lets users derive computed properties or normalize values without touching the generated constructor. Same zero-cost pattern as `ValidateCustom`.
 - [ ] **SourceLink + deterministic builds + `.snupkg`** so users get source debugging on nuget.org.

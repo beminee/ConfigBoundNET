@@ -234,3 +234,36 @@ If the `"Retry"` section is absent from config, the property retains its default
 Any property type not in the supported set produces a **CB0010** warning at build time and a `// Skipped` comment in the generated constructor. The property keeps its C#-declared default at runtime.
 
 To add support for a custom type, wrap it in a `[ConfigSection]`-annotated record and use it as a nested config type.
+
+## Assembly-wide registration (`AddConfigBoundSections`)
+
+In addition to the per-type `services.AddDbConfig(config)` extension, the generator emits one assembly-wide helper in the `ConfigBoundNET` namespace:
+
+```csharp
+using ConfigBoundNET;
+
+builder.Services.AddConfigBoundSections(builder.Configuration);
+```
+
+This calls every `Add{TypeName}Config` in the assembly in a single line — useful when a project has many `[ConfigSection]` types.
+
+### The `.Exists()` gate
+
+Each per-type call is wrapped at runtime in a `ConfigurationExtensions.Exists(section)` check:
+
+```csharp
+if (configuration.GetSection(DbConfig.SectionName).Exists())
+    DbConfigServiceCollectionExtensions.AddDbConfig(services, configuration);
+```
+
+So a type whose configuration section is **absent** from the live `IConfiguration` is silently skipped — the validator does not run, and the type is not registered in DI. This is intended for types that exist only as nested or list/dictionary elements of another config type, where the element type's own `[ConfigSection("…")]` section name is a throwaway scaffold never meant to appear in real config.
+
+### When to use the per-type extension instead
+
+Prefer `services.AddXxxConfig(config)` directly when:
+- You want the validator to fire even when the section is absent (e.g. to catch "forgot to add the section").
+- You want fluent composition with `.AddOptions<T>().ValidateOnStart().Configure(…)`.
+- You want conditional registration: `if (feature) services.AddXConfig(config);`.
+- You're writing a reusable library that ships `[ConfigSection]` types — consumers can opt into just the ones they want.
+
+The aggregate is additive. Both coexist, and nothing stops you from mixing them in the same `Program.cs`.
