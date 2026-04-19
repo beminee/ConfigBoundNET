@@ -468,6 +468,20 @@ Expected output:
 
 Try editing `appsettings.json` to remove the `Conn` value and re-run — the host now fails at startup with a precise, actionable error.
 
+### Benchmarks
+
+Performance comparisons against Microsoft's source-generated binder and validator live in [`benchmarks/`](benchmarks/).
+
+```bash
+# Run every benchmark (binding + validation):
+dotnet run -c Release --project benchmarks/ConfigBoundNET.Benchmarks
+
+# Only the binding comparisons:
+dotnet run -c Release --project benchmarks/ConfigBoundNET.Benchmarks -- --filter '*Bind*'
+```
+
+See [`benchmarks/README.md`](benchmarks/README.md) for what's measured, how to confirm both Microsoft generators actually activated (verify the comparison is real), and how to read the results.
+
 ---
 
 ## Roadmap

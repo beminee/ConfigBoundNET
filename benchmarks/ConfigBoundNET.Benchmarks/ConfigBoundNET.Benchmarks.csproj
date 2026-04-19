@@ -1,0 +1,79 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Performance benchmarks for ConfigBoundNET, comparing its generated binding
+    and validation paths against Microsoft's source-generated equivalents:
+    EnableConfigurationBindingGenerator for binding, and [OptionsValidator]
+    for IValidateOptions validation. Local-run tool only; not part of CI.
+    See benchmarks/README.md for run instructions.
+    Hardware-dependent. Numbers vary by machine; relative ordering and rough
+    orders of magnitude are what matter.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ConfigBoundNET.Benchmarks</RootNamespace>
+    <IsPackable>false</IsPackable>
+
+    <!-- Project-level trigger for Microsoft's source-generated binding.
+         Every section.Get<T>() / services.Configure<T>(section) call in this
+         project is intercepted and routed through the generated
+         AOT-friendly binder instead of ConfigurationBinder's reflection path. -->
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+
+    <!-- BenchmarkDotNet-internal patterns (public benchmark classes, instance
+         methods on them, reflected member access) and config-binder patterns
+         (public property setters on collections, public POCOs) trip several
+         CAxxxx analysers. Suppressed project-wide so the rest of the repo
+         keeps its strict posture. Mirrors the AOT-test project's approach.
+         - CA1001: types owning disposable fields (BDN setup patterns)
+         - CA1002: don't expose List<T> in public API (config POCOs must)
+         - CA1515: types should be internal (BDN needs public)
+         - CA1707: underscore in identifier (benchmark name convention)
+         - CA1812: uninstantiated internal class (reflection-created)
+         - CA1822: member could be static (BDN requires instance methods)
+         - CA1852: could be sealed (benchmark classes are instantiated reflectively)
+         - CA2227: collection properties should be read-only (binder needs setters) -->
+    <NoWarn>$(NoWarn);CA1001;CA1002;CA1515;CA1707;CA1812;CA1822;CA1852;CA2227</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- We need both roles from the same ProjectReference:
+           1. Generator runs at build time against this project's source so
+              ConfigBoundAppConfig gets its generated validator/constructor
+              (the runtime benchmarks need it).
+           2. ConfigBoundGenerator and friends are accessible at runtime so
+              GeneratorBenchmarks can instantiate the generator and drive it
+              against synthetic compilations.
+         OutputItemType="Analyzer" gives role (1); ReferenceOutputAssembly="true"
+         (the default, made explicit here) gives role (2). -->
+    <ProjectReference Include="..\..\src\ConfigBoundNET\ConfigBoundNET.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="true" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.5" />
+    <PackageReference Include="System.ComponentModel.Annotations" Version="5.0.0" />
+
+    <!-- Roslyn APIs used only by GeneratorBenchmarks to build synthetic
+         compilations and drive the generator directly. Mirrors the test
+         project's references so the benchmark harness matches the patterns
+         the correctness tests already pin down. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
+    <PackageReference Include="Basic.Reference.Assemblies.Net100" Version="1.8.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

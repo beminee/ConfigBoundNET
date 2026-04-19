@@ -21,6 +21,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConfigBoundNET.CodeFixes", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConfigBoundNET.WebApi", "examples\ConfigBoundNET.WebApi\ConfigBoundNET.WebApi.csproj", "{16C9C1BF-4B7F-4C3F-AC33-FDE1D9E2D394}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "benchmarks", "benchmarks", "{66320409-64EC-F7C5-3DEF-65E7510DAAD1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConfigBoundNET.Benchmarks", "benchmarks\ConfigBoundNET.Benchmarks\ConfigBoundNET.Benchmarks.csproj", "{CDB7320E-D6E7-404A-9E65-1C842A75B75C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -103,6 +107,18 @@ Global
 		{16C9C1BF-4B7F-4C3F-AC33-FDE1D9E2D394}.Release|x64.Build.0 = Release|Any CPU
 		{16C9C1BF-4B7F-4C3F-AC33-FDE1D9E2D394}.Release|x86.ActiveCfg = Release|Any CPU
 		{16C9C1BF-4B7F-4C3F-AC33-FDE1D9E2D394}.Release|x86.Build.0 = Release|Any CPU
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C}.Debug|x64.Build.0 = Debug|Any CPU
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C}.Debug|x86.Build.0 = Debug|Any CPU
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C}.Release|x64.ActiveCfg = Release|Any CPU
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C}.Release|x64.Build.0 = Release|Any CPU
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C}.Release|x86.ActiveCfg = Release|Any CPU
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -114,6 +130,7 @@ Global
 		{D6FC4C04-E5C4-4BB3-B0B3-D083E905CC53} = {950F496D-D70A-4E56-AE88-79C8FDED99D7}
 		{E17D3BD3-3D18-41AC-B6D4-AB969410C1A2} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{16C9C1BF-4B7F-4C3F-AC33-FDE1D9E2D394} = {2543445B-8C0C-4A11-A0C9-AA55D9DAFD2E}
+		{CDB7320E-D6E7-404A-9E65-1C842A75B75C} = {66320409-64EC-F7C5-3DEF-65E7510DAAD1}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {F9575A2B-BD30-431B-BDC3-E4B35C4033C4}
