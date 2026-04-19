@@ -94,7 +94,7 @@ ConfigBoundNET ships as a single analyzer package. There is no runtime dependenc
 
 ```xml
 <ItemGroup>
-  <PackageReference Include="ConfigBoundNET" Version="2.1.0" />
+  <PackageReference Include="ConfigBoundNET" Version="2.3.0" />
 </ItemGroup>
 ```
 
