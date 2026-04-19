@@ -110,10 +110,14 @@ public sealed class ConfigBoundGeneratorTests
 
         Assert.Contains(result.Diagnostics, d => d.Id == "CB0001");
 
-        // When the type fails validation we should *not* emit any per-type
-        // output (only the post-init attribute + OptionsFactory helper),
-        // otherwise the user would see a second compile error masking the real one.
-        Assert.Empty(result.NonPostInitGeneratedTrees());
+        // When the type fails validation we should *not* emit per-type output
+        // for it — otherwise the user would see a second compile error masking
+        // the real one. Per-type files end in ".ConfigBound.g.cs"; the
+        // assembly-wide AddConfigBoundSections aggregate is always emitted and
+        // is not per-type output.
+        Assert.DoesNotContain(
+            result.NonPostInitGeneratedTrees(),
+            tree => tree.FilePath.EndsWith(".ConfigBound.g.cs", System.StringComparison.Ordinal));
     }
 
     [Fact]

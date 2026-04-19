@@ -1,6 +1,7 @@
 // Copyright (c) ConfigBoundNET contributors. Licensed under the GPL-3 License.
 
 using System.CodeDom.Compiler;
+using System.Collections.Immutable;
 using System.IO;
 using System.Text;
 
@@ -50,6 +51,120 @@ internal static class SourceEmitter
         WritePartialTypeWithValidator(writer, model);
         writer.WriteLine();
         WriteServiceCollectionExtensions(writer, model);
+
+        writer.Flush();
+        return buffer.ToString();
+    }
+
+    /// <summary>
+    /// Produce the assembly-wide <c>AddConfigBoundSections</c> extension method
+    /// source for the given entries. Emits a file-scoped <c>ConfigBoundNET</c>
+    /// namespace with a single static class; each call to a per-type
+    /// <c>Add{TypeName}Config</c> is wrapped in a
+    /// <c>ConfigurationExtensions.Exists</c> gate so types whose configuration
+    /// section is absent (typically nested-only types with throwaway section
+    /// names) are silently skipped.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Always emits the method, even when <paramref name="entries"/> is empty —
+    /// that way users can always write
+    /// <c>services.AddConfigBoundSections(config)</c> pre-emptively, before any
+    /// <c>[ConfigSection]</c> type exists, without their code breaking on the
+    /// first type addition.
+    /// </para>
+    /// <para>
+    /// Calls use fully qualified static-method syntax
+    /// (<c>{TypeNamespace}.{TypeName}ServiceCollectionExtensions.Add{TypeName}(services, configuration)</c>)
+    /// rather than extension-method syntax so the generated file is immune to
+    /// name collisions with user types in the consumer's namespace.
+    /// </para>
+    /// </remarks>
+    public static string EmitAggregateRegistration(ImmutableArray<AggregateEntry> entries)
+    {
+        var buffer = new StringBuilder();
+        using var stringWriter = new StringWriter(buffer);
+        using var writer = new IndentedTextWriter(stringWriter, "    ");
+
+        WriteHeader(writer);
+
+        writer.WriteLine("namespace ConfigBoundNET;");
+        writer.WriteLine();
+
+        writer.WriteLine("/// <summary>");
+        writer.WriteLine("/// Generated convenience extensions that register every <c>[ConfigSection]</c>-");
+        writer.WriteLine("/// annotated type discovered in the containing assembly in a single call.");
+        writer.WriteLine("/// </summary>");
+        writer.WriteLine("public static class ConfigBoundSectionRegistrations");
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        writer.WriteLine("/// <summary>");
+        writer.WriteLine("/// Registers every <c>[ConfigSection]</c>-annotated type in this assembly");
+        writer.WriteLine("/// whose configuration section exists in <paramref name=\"configuration\"/>.");
+        writer.WriteLine("/// Types whose section is absent are silently skipped — if you need");
+        writer.WriteLine("/// unconditional registration (e.g. to run the validator against a missing");
+        writer.WriteLine("/// section), call the per-type <c>Add{TypeName}Config</c> extension directly.");
+        writer.WriteLine("/// </summary>");
+        writer.WriteLine("/// <param name=\"services\">The service collection to register into.</param>");
+        writer.WriteLine("/// <param name=\"configuration\">The application's <c>IConfiguration</c> root or parent section.</param>");
+        writer.WriteLine("/// <returns>The original <paramref name=\"services\"/> instance, enabling fluent chaining.</returns>");
+        writer.WriteLine("/// <exception cref=\"global::System.ArgumentNullException\">Thrown when <paramref name=\"services\"/> or <paramref name=\"configuration\"/> is <see langword=\"null\"/>.</exception>");
+
+        writer.WriteLine("public static global::Microsoft.Extensions.DependencyInjection.IServiceCollection AddConfigBoundSections(");
+        writer.Indent++;
+        writer.WriteLine("this global::Microsoft.Extensions.DependencyInjection.IServiceCollection services,");
+        writer.WriteLine("global::Microsoft.Extensions.Configuration.IConfiguration configuration)");
+        writer.Indent--;
+
+        writer.WriteLine("{");
+        writer.Indent++;
+
+        writer.WriteLine("if (services is null) throw new global::System.ArgumentNullException(nameof(services));");
+        writer.WriteLine("if (configuration is null) throw new global::System.ArgumentNullException(nameof(configuration));");
+
+        if (entries.Length > 0)
+        {
+            writer.WriteLine();
+        }
+
+        foreach (var entry in entries)
+        {
+            // Build the fully qualified references. For types in the global
+            // namespace, Namespace is null — skip the `Namespace.` prefix.
+            var typeQualifier = entry.Namespace is null
+                ? $"global::{entry.TypeName}"
+                : $"global::{entry.Namespace}.{entry.TypeName}";
+
+            var extensionsQualifier = entry.Namespace is null
+                ? $"global::{entry.TypeName}ServiceCollectionExtensions"
+                : $"global::{entry.Namespace}.{entry.TypeName}ServiceCollectionExtensions";
+
+            // Runtime .Exists() gate: skip types whose section is absent from
+            // the live configuration. Keeps nested-only types (arbitrary
+            // section names like "__inner__") from spuriously failing
+            // validation on startup.
+            writer.Write("if (global::Microsoft.Extensions.Configuration.ConfigurationExtensions.Exists(configuration.GetSection(");
+            writer.Write(typeQualifier);
+            writer.WriteLine(".SectionName)))");
+            writer.WriteLine("{");
+            writer.Indent++;
+            writer.Write(extensionsQualifier);
+            writer.Write(".Add");
+            writer.Write(entry.TypeName);
+            writer.WriteLine("(services, configuration);");
+            writer.Indent--;
+            writer.WriteLine("}");
+        }
+
+        writer.WriteLine();
+        writer.WriteLine("return services;");
+
+        writer.Indent--;
+        writer.WriteLine("}");
+
+        writer.Indent--;
+        writer.WriteLine("}");
 
         writer.Flush();
         return buffer.ToString();
