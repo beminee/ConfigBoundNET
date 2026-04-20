@@ -112,17 +112,25 @@
     </None>
   </ItemGroup>
 
-  <!-- Build-order edge to the schema-emission task project. Mirrors the
-       example: ReferenceOutputAssembly=false means we only enforce "build
-       the task DLL first", not "add it to our reference closure" — keeping
-       the AOT analyzer blind to the task's MSBuild dependencies. -->
-  <ItemGroup>
-    <ProjectReference Include="..\..\src\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
-                      ReferenceOutputAssembly="false"
-                      PrivateAssets="all"
-                      SkipGetTargetFrameworkProperties="true"
-                      GlobalPropertiesToRemove="PublishAot;PublishTrimmed;PublishSingleFile;RuntimeIdentifier" />
-  </ItemGroup>
+  <!-- Build-order edge to the schema-emission task project. We
+       deliberately avoid <ProjectReference> here: publish walks the
+       reference graph looking for files to copy, which triggers
+       MSB4057 (GetCopyToPublishDirectoryItems missing) when the walk
+       hits the multi-targeted task project. Direct <MSBuild> invokes
+       build the task DLL before CoreBuild runs without polluting the
+       publish graph. Restore is invoked explicitly because without a
+       ProjectReference the consumer's `dotnet restore` pass doesn't
+       reach the task project. -->
+  <Target Name="_BuildConfigBoundTaskAssembly" BeforeTargets="PrepareForBuild">
+    <MSBuild Projects="..\..\src\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
+             Properties="Configuration=$(Configuration)"
+             Targets="Restore"
+             RemoveProperties="PublishAot;PublishTrimmed;PublishSingleFile;RuntimeIdentifier;TargetFramework" />
+    <MSBuild Projects="..\..\src\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
+             Properties="Configuration=$(Configuration)"
+             Targets="Build"
+             RemoveProperties="PublishAot;PublishTrimmed;PublishSingleFile;RuntimeIdentifier;TargetFramework" />
+  </Target>
 
   <!-- Import the ConfigBoundNET build props + targets manually, because
        this project consumes the generator via ProjectReference rather

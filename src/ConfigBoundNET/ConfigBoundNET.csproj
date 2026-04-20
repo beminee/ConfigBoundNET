@@ -118,16 +118,28 @@
     <InternalsVisibleTo Include="ConfigBoundNET.CodeFixes" />
   </ItemGroup>
 
-  <ItemGroup>
-    <!-- Build-order dependency only. The task DLL is packed via <None
-         Include="...ConfigBoundNET.Build.dll"> above; we do NOT want its
-         assembly flowing into the generator's compile closure (different
-         TFMs; task DLL references MSBuild). ReferenceOutputAssembly=false
-         + SkipGetTargetFrameworkProperties=true isolates us cleanly. -->
-    <ProjectReference Include="..\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
-                      ReferenceOutputAssembly="false"
-                      PrivateAssets="all"
-                      SkipGetTargetFrameworkProperties="true" />
-  </ItemGroup>
+  <!-- Build-order dependency on the schema-emission task assembly. Using
+       <ProjectReference> here would cause `dotnet publish` in consumer
+       projects to transitively walk through this generator's reference
+       graph into the multi-targeted task project and fail with MSB4057
+       ("GetCopyToPublishDirectoryItems does not exist"). A direct
+       <MSBuild> invoke builds the task DLL without polluting the
+       reference graph. Pack then picks it up via the
+       <None Include="...ConfigBoundNET.Build.dll" Pack="true"> items
+       in the ItemGroup above.
+
+       Restore has to be invoked explicitly: without a <ProjectReference>
+       the consumer's `dotnet restore` doesn't walk into the task project,
+       so its obj/project.assets.json would be missing when Build runs. -->
+  <Target Name="_BuildConfigBoundTaskAssembly" BeforeTargets="BeforeBuild">
+    <MSBuild Projects="..\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
+             Properties="Configuration=$(Configuration)"
+             Targets="Restore"
+             RemoveProperties="PublishAot;PublishTrimmed;PublishSingleFile;RuntimeIdentifier;TargetFramework" />
+    <MSBuild Projects="..\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
+             Properties="Configuration=$(Configuration)"
+             Targets="Build"
+             RemoveProperties="PublishAot;PublishTrimmed;PublishSingleFile;RuntimeIdentifier;TargetFramework" />
+  </Target>
 
 </Project>

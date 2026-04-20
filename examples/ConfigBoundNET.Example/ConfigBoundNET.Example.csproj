@@ -76,17 +76,24 @@
   </ItemGroup>
 
   <!-- Ensure the schema-emission task DLL is built before this project so
-       the AfterTargets="Build" UsingTask can load it. Consumers of the
-       real NuGet get this automatically via the package restore; the
-       example consumes the repo layout directly so we add the build-order
-       edge explicitly. ReferenceOutputAssembly=false isolates us from the
-       task's own dependency closure. -->
-  <ItemGroup>
-    <ProjectReference Include="..\..\src\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
-                      ReferenceOutputAssembly="false"
-                      PrivateAssets="all"
-                      SkipGetTargetFrameworkProperties="true" />
-  </ItemGroup>
+       the AfterTargets="Build" UsingTask can load it. Invoked via direct
+       <MSBuild> rather than <ProjectReference> so `dotnet publish` does
+       not traverse the multi-targeted task project (which would trigger
+       MSB4057 looking for GetCopyToPublishDirectoryItems). Restore is
+       invoked explicitly since there's no ProjectReference for the
+       normal restore walk to follow. Consumers of the real NuGet get
+       the task DLL through the restored package and don't need any of
+       this glue. -->
+  <Target Name="_BuildConfigBoundTaskAssembly" BeforeTargets="PrepareForBuild">
+    <MSBuild Projects="..\..\src\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
+             Properties="Configuration=$(Configuration)"
+             Targets="Restore"
+             RemoveProperties="PublishAot;PublishTrimmed;PublishSingleFile;RuntimeIdentifier;TargetFramework" />
+    <MSBuild Projects="..\..\src\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
+             Properties="Configuration=$(Configuration)"
+             Targets="Build"
+             RemoveProperties="PublishAot;PublishTrimmed;PublishSingleFile;RuntimeIdentifier;TargetFramework" />
+  </Target>
 
   <!-- Import the default properties shipped with the real NuGet package,
        then the targets that wire EmitConfigBoundSchemaTask into the build.
