@@ -55,6 +55,21 @@
          targets that are constructed reflectively at startup, mirroring the
          suppression we already use in the example project. -->
     <NoWarn>$(NoWarn);CA1812;CA1852</NoWarn>
+
+    <!-- Opt into JSON schema emission so the smoke test exercises
+         the full path: source generator emits the const, MSBuild task
+         reads it out of the just-built assembly via MetadataLoadContext,
+         file lands on disk. The output path is resolved lazily via the
+         _SetAotSchemaPath target below because $(TargetDir) / $(OutDir)
+         are populated by Microsoft.Common.CurrentVersion.targets, which
+         run after static property evaluation. -->
+    <ConfigBoundEmitSchema>true</ConfigBoundEmitSchema>
+
+    <!-- Point the targets file at the matching task DLL inside the repo
+         rather than the NuGet-layout path. Mirrors what the example
+         project does; real consumers who pull the NuGet leave this
+         unset. -->
+    <ConfigBoundSchemaTaskAssembly>$(MSBuildThisFileDirectory)..\..\src\ConfigBoundNET.Build\bin\$(Configuration)\net10.0\ConfigBoundNET.Build.dll</ConfigBoundSchemaTaskAssembly>
   </PropertyGroup>
 
   <ItemGroup>
@@ -96,5 +111,34 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <!-- Build-order edge to the schema-emission task project. Mirrors the
+       example: ReferenceOutputAssembly=false means we only enforce "build
+       the task DLL first", not "add it to our reference closure" — keeping
+       the AOT analyzer blind to the task's MSBuild dependencies. -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all"
+                      SkipGetTargetFrameworkProperties="true"
+                      GlobalPropertiesToRemove="PublishAot;PublishTrimmed;PublishSingleFile;RuntimeIdentifier" />
+  </ItemGroup>
+
+  <!-- Import the ConfigBoundNET build props + targets manually, because
+       this project consumes the generator via ProjectReference rather
+       than the packaged NuGet (which auto-imports them). -->
+  <Import Project="..\..\src\ConfigBoundNET\build\ConfigBoundNET.props" />
+  <Import Project="..\..\src\ConfigBoundNET\build\ConfigBoundNET.targets" />
+
+  <!-- Defer computation of the schema output path until target run time,
+       when $(TargetDir) has been populated by the SDK's common targets.
+       We write alongside the test executable so the runtime half of the
+       AOT smoke can assert the file content matches the compiled-in
+       ConfigBoundJsonSchema.Json const. -->
+  <Target Name="_SetAotSchemaPath" BeforeTargets="EmitConfigBoundSchema">
+    <PropertyGroup>
+      <ConfigBoundSchemaOutputPath>$(TargetDir)appsettings.schema.json</ConfigBoundSchemaOutputPath>
+    </PropertyGroup>
+  </Target>
 
 </Project>

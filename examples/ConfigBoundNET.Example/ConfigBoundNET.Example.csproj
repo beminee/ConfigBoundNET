@@ -27,6 +27,19 @@
                     are conventionally left unsealed so users can derive
                     or mock them in tests). -->
     <NoWarn>$(NoWarn);CA1812;CA1852;CA1303</NoWarn>
+
+    <!-- Opt into JSON schema emission. The imported ConfigBoundNET.targets
+         at the bottom of this file picks this up and writes the schema
+         after Build. $(ConfigBoundSchemaOutputPath) defaults to
+         $(MSBuildProjectDirectory)\appsettings.schema.json. -->
+    <ConfigBoundEmitSchema>true</ConfigBoundEmitSchema>
+
+    <!-- This example consumes the generator via ProjectReference rather
+         than the packaged NuGet, so point the schema task at the matching
+         build output location. Real consumers who reference the NuGet
+         leave this unset — ConfigBoundNET.targets resolves the task DLL
+         out of tasks/<tfm>/ inside the restored package. -->
+    <ConfigBoundSchemaTaskAssembly>$(MSBuildThisFileDirectory)..\..\src\ConfigBoundNET.Build\bin\$(Configuration)\net10.0\ConfigBoundNET.Build.dll</ConfigBoundSchemaTaskAssembly>
   </PropertyGroup>
 
   <ItemGroup>
@@ -61,5 +74,25 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <!-- Ensure the schema-emission task DLL is built before this project so
+       the AfterTargets="Build" UsingTask can load it. Consumers of the
+       real NuGet get this automatically via the package restore; the
+       example consumes the repo layout directly so we add the build-order
+       edge explicitly. ReferenceOutputAssembly=false isolates us from the
+       task's own dependency closure. -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all"
+                      SkipGetTargetFrameworkProperties="true" />
+  </ItemGroup>
+
+  <!-- Import the default properties shipped with the real NuGet package,
+       then the targets that wire EmitConfigBoundSchemaTask into the build.
+       NuGet auto-imports these for package references; ProjectReference
+       consumers import them explicitly. -->
+  <Import Project="..\..\src\ConfigBoundNET\build\ConfigBoundNET.props" />
+  <Import Project="..\..\src\ConfigBoundNET\build\ConfigBoundNET.targets" />
 
 </Project>

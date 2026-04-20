@@ -43,6 +43,12 @@
     <!-- Roslyn components cannot depend on the documentation analyzer here
          because it would demand docs on emitted helper types. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!-- NU5100: a DLL not under lib/ won't be added as a compile reference.
+         We intentionally ship the generator and the schema-emission task
+         outside lib/ (analyzers/dotnet/cs/ and tasks/<tfm>/ respectively)
+         because they must not flow into consumers' runtime closure. -->
+    <NoWarn>$(NoWarn);NU5100</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -76,6 +82,23 @@
     <None Include="..\ConfigBoundNET.CodeFixes\$(OutputPath)\ConfigBoundNET.CodeFixes.dll"
           Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
 
+    <!-- Ship the schema-emission MSBuild task alongside the matching
+         props/targets. The task DLL is multi-targeted (net472 for VS /
+         .NET Framework MSBuild, net10.0 for dotnet build / .NET Core
+         MSBuild); ConfigBoundNET.targets picks the right one via
+         $(MSBuildRuntimeType). -->
+    <None Include="..\ConfigBoundNET.Build\bin\$(Configuration)\net472\ConfigBoundNET.Build.dll"
+          Pack="true" PackagePath="tasks\net472" Visible="false" />
+    <None Include="..\ConfigBoundNET.Build\bin\$(Configuration)\net10.0\ConfigBoundNET.Build.dll"
+          Pack="true" PackagePath="tasks\net10.0" Visible="false" />
+
+    <!-- Pack the props + targets under build/. NuGet auto-imports a
+         <PackageId>.props and <PackageId>.targets file from build/ when
+         the package is restored, so consumers get the behaviour with
+         nothing more than a package reference. -->
+    <None Include="build\ConfigBoundNET.props"   Pack="true" PackagePath="build\" Visible="false" />
+    <None Include="build\ConfigBoundNET.targets" Pack="true" PackagePath="build\" Visible="false" />
+
     <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
@@ -93,6 +116,18 @@
          without promoting them to public API. -->
     <InternalsVisibleTo Include="ConfigBoundNET.Tests" />
     <InternalsVisibleTo Include="ConfigBoundNET.CodeFixes" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Build-order dependency only. The task DLL is packed via <None
+         Include="...ConfigBoundNET.Build.dll"> above; we do NOT want its
+         assembly flowing into the generator's compile closure (different
+         TFMs; task DLL references MSBuild). ReferenceOutputAssembly=false
+         + SkipGetTargetFrameworkProperties=true isolates us cleanly. -->
+    <ProjectReference Include="..\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all"
+                      SkipGetTargetFrameworkProperties="true" />
   </ItemGroup>
 
 </Project>

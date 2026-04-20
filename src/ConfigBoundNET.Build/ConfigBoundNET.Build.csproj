@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    MSBuild task that writes the JSON schema emitted by the ConfigBoundNET
+    source generator to disk at build time.
+
+    The generator embeds the schema as a const string on a public
+    `ConfigBoundJsonSchema` class inside the consumer's assembly. This task
+    reads that const out of the just-built assembly via MetadataLoadContext
+    (reflection-only, no code execution, no trim concerns) and drops the
+    schema into $(ConfigBoundSchemaOutputPath) — by default,
+    $(MSBuildProjectDirectory)/appsettings.schema.json.
+
+    The task is shipped inside the existing ConfigBoundNET NuGet under
+    tasks/<tfm>/; the matching build/ConfigBoundNET.targets wires it into
+    the consumer's build pipeline, opt-in via $(ConfigBoundEmitSchema).
+  -->
+
+  <PropertyGroup>
+    <!-- MSBuild loads net472 tasks in Visual Studio / .NET Framework MSBuild
+         and net10.0 tasks in dotnet build / .NET Core MSBuild. Multi-targeting
+         lets one package serve both hosts. -->
+    <TargetFrameworks>net472;net10.0</TargetFrameworks>
+
+    <!-- This DLL is shipped inside the generator's NuGet under tasks/<tfm>/;
+         it has no independent package identity and is never referenced by
+         consumers as a library. -->
+    <IsPackable>false</IsPackable>
+
+    <!-- CA1812 — the task class is instantiated by MSBuild itself, not by
+         any code the analyzer can see.
+         CA1819  — MSBuild ITaskItem inputs are bound as arrays by the
+         MSBuild infrastructure; the "don't expose array properties" rule
+         doesn't apply to the task-parameter contract. -->
+    <NoWarn>$(NoWarn);CA1812;CA1819</NoWarn>
+
+    <!-- The task should not pull any of its dependencies into the consumer's
+         build output. All M.Build.* assemblies are already provided by the
+         MSBuild host at runtime. -->
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ExcludeAssets="Runtime": the host provides these; only compile-time
+         references are needed to derive from Task. PrivateAssets="all":
+         never flow into a downstream consumer's package graph. -->
+    <PackageReference Include="Microsoft.Build.Utilities.Core" Version="18.4.0" ExcludeAssets="Runtime" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Build.Framework"     Version="18.4.0" ExcludeAssets="Runtime" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- MetadataLoadContext is provided by its own assembly on both net472
+         and net10.0 — in-box ref packs don't expose it by default. Package
+         reference is safe on both TFMs (NuGet prefers in-box where
+         available). -->
+    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="9.0.11" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

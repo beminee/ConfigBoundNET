@@ -131,6 +131,29 @@ Note: `List<T>` / `T[]` / `IReadOnlyList<T>` where `T` is itself a `[ConfigSecti
 
 ## Informational diagnostics
 
+### CB0011: Nested [ConfigSection] type defined outside this compilation
+
+```csharp
+// In assembly "Shared":
+[ConfigSection("__retry__")]
+public partial record RetryPolicyConfig { public int MaxAttempts { get; init; } }
+
+// In assembly "App" (references Shared):
+[ConfigSection("Api")]
+public partial record ApiConfig
+{
+    public RetryPolicyConfig Retry { get; init; } = default!;  // CB0011
+}
+```
+
+**Why**: The JSON-schema aggregate emitter inlines every nested `[ConfigSection]` sub-schema by looking up the referenced type's model in the compilation-local index. Types whose definition lives in another assembly aren't in that index — the generator can only see them through metadata, which doesn't carry property-level detail like `[Range]` bounds or enum members. To keep the schema valid, the walker emits a permissive `{ "type": "object", "additionalProperties": true }` for that property and raises **CB0011** so you know the schema is slightly degraded there.
+
+**Runtime binding and validation are unaffected** — the nested type carries its own generated constructor and validator in its own assembly; only the IDE IntelliSense for that property's keys is loosened. If the inner type is owned by the same team, the cleanest fix is to move both types into the same assembly (or the same project that hosts the schema-emission opt-in). For third-party nested types, the permissive fallback is usually what you want anyway.
+
+**Suppress** with `#pragma warning disable CB0011` or `<NoWarn>$(NoWarn);CB0011</NoWarn>` if the external-type case is intentional.
+
+---
+
 ### CB0009: [Required] is redundant on non-nullable property
 
 ```csharp

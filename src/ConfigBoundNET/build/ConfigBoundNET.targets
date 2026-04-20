@@ -1,0 +1,59 @@
+<Project>
+
+  <!--
+    Wires the EmitConfigBoundSchemaTask into the consumer's build pipeline.
+    The task lives in ConfigBoundNET.Build.dll, shipped inside this NuGet
+    under tasks/<tfm>/. The task reads the source-generator-emitted
+    ConfigBoundJsonSchema.Json const out of the just-built assembly via
+    MetadataLoadContext, and writes it to $(ConfigBoundSchemaOutputPath).
+
+    Opt-in via <ConfigBoundEmitSchema>true</ConfigBoundEmitSchema>. Default
+    off so existing consumers upgrading the package don't suddenly see a
+    new tracked file appear in their repo.
+  -->
+
+  <PropertyGroup>
+    <!-- Pick the right task TFM based on the MSBuild host. Visual Studio
+         and .NET Framework MSBuild use net472; dotnet build / .NET Core
+         MSBuild use net10.0. Both DLLs are packed into the NuGet under
+         tasks/<tfm>/. -->
+    <_ConfigBoundSchemaTaskTfm Condition="'$(MSBuildRuntimeType)' == 'Core'">net10.0</_ConfigBoundSchemaTaskTfm>
+    <_ConfigBoundSchemaTaskTfm Condition="'$(_ConfigBoundSchemaTaskTfm)' == ''">net472</_ConfigBoundSchemaTaskTfm>
+
+    <!-- Default to the NuGet-layout path (tasks/<tfm>/ two directories up
+         from this build/ file). Consumers who reference the generator via
+         ProjectReference rather than the packaged NuGet can override
+         $(ConfigBoundSchemaTaskAssembly) to point at the task DLL in its
+         build output location. -->
+    <ConfigBoundSchemaTaskAssembly Condition="'$(ConfigBoundSchemaTaskAssembly)' == ''">$(MSBuildThisFileDirectory)..\tasks\$(_ConfigBoundSchemaTaskTfm)\ConfigBoundNET.Build.dll</ConfigBoundSchemaTaskAssembly>
+  </PropertyGroup>
+
+  <UsingTask
+    TaskName="ConfigBoundNET.Build.EmitConfigBoundSchemaTask"
+    AssemblyFile="$(ConfigBoundSchemaTaskAssembly)" />
+
+  <!--
+    Target runs after Build, so $(TargetPath) is guaranteed present and up
+    to date. We deliberately do NOT use Inputs/Outputs here: resolving a
+    stable output path from $(ConfigBoundSchemaOutputPath) requires
+    $(OutDir)-style MSBuild-reserved properties that aren't fully resolved
+    at Outputs-evaluation time for consumers who parameterise the output
+    location. Instead the task itself short-circuits on unchanged content
+    (WriteIfChanged), which preserves the file's mtime and so gives
+    downstream targets the same incremental-build contract without needing
+    the declarative Inputs/Outputs pair. Condition="... == 'true'" keeps
+    the whole pipeline dark unless the user opted in via
+    $(ConfigBoundEmitSchema).
+  -->
+  <Target Name="EmitConfigBoundSchema"
+          AfterTargets="Build"
+          Condition="'$(ConfigBoundEmitSchema)' == 'true' and '$(TargetPath)' != ''">
+
+    <EmitConfigBoundSchemaTask
+      AssemblyPath="$(TargetPath)"
+      OutputPath="$(ConfigBoundSchemaOutputPath)"
+      ReferencePaths="@(ReferencePath)" />
+
+  </Target>
+
+</Project>

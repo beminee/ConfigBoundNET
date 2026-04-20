@@ -9,7 +9,8 @@
 
 - **[Configuration Binding](configuration-binding.md)** — supported types, collections, nested configs, unsupported types
 - **[Validation](validation.md)** — nullability checks, DataAnnotations, custom hooks, nested validation, execution order
-- **[Diagnostics Reference](diagnostics.md)** — all CB0001–CB0010 diagnostics with examples, fixes, and suppression
+- **[JSON Schema Emission](json-schema-emission.md)** — `appsettings.schema.json` at build time for IDE IntelliSense, the two-step SG-const + MSBuild-task pipeline, opt-in via `<ConfigBoundEmitSchema>`
+- **[Diagnostics Reference](diagnostics.md)** — all CB0001–CB0011 diagnostics with examples, fixes, and suppression
 - **[AOT and Trimming](aot-and-trimming.md)** — how the reflection-free pipeline works, CI verification, known limitations
 
 ## Deep dives

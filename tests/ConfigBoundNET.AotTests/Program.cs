@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.IO;
 using System.Text.Json;
 using ConfigBoundNET;
 using ConfigBoundNET.AotTests;
@@ -111,6 +112,50 @@ catch (JsonException ex)
     failures.Add("ConfigBoundJsonSchema.Json: failed to parse as JSON — " + ex.Message);
 }
 
+// ── Phase-2 file-on-disk emission. The project sets
+//    <ConfigBoundEmitSchema>true</ConfigBoundEmitSchema> and points the
+//    output at $(OutDir)appsettings.schema.json, so the MSBuild task
+//    (EmitConfigBoundSchemaTask) must have dropped the schema alongside
+//    the test executable. Assert that the file exists, is parseable JSON,
+//    and matches the const byte-for-byte — the whole point of the task
+//    is to stay in sync with the const the generator emitted. ────────────
+var schemaPath = Path.Combine(AppContext.BaseDirectory, "appsettings.schema.json");
+if (!File.Exists(schemaPath))
+{
+    failures.Add(
+        "appsettings.schema.json: expected the MSBuild task to have written '"
+        + schemaPath
+        + "' during build, but the file is missing. "
+        + "Check that EmitConfigBoundSchemaTask ran and its ReferencePaths resolver succeeded.");
+}
+else
+{
+    var onDisk = File.ReadAllText(schemaPath);
+    if (!string.Equals(onDisk, ConfigBoundJsonSchema.Json, StringComparison.Ordinal))
+    {
+        // Surface the divergence without dumping kilobytes of JSON into
+        // CI output — just the first mismatching span plus lengths.
+        var diffAt = FirstDifference(onDisk, ConfigBoundJsonSchema.Json);
+        failures.Add(
+            "appsettings.schema.json: on-disk content differs from ConfigBoundJsonSchema.Json "
+            + "at offset " + diffAt + " (file: " + onDisk.Length + " chars, const: " + ConfigBoundJsonSchema.Json.Length + " chars).");
+    }
+    else
+    {
+        // Parse too — defence in depth against a future regression that
+        // happens to pass byte-equality but breaks JSON validity.
+        try
+        {
+            using var diskDoc = JsonDocument.Parse(onDisk);
+            _ = diskDoc.RootElement.GetProperty("properties").GetProperty("Db");
+        }
+        catch (JsonException ex)
+        {
+            failures.Add("appsettings.schema.json: file failed to parse as JSON — " + ex.Message);
+        }
+    }
+}
+
 // ── Report. ────────────────────────────────────────────────────────────────
 if (failures.Count == 0)
 {
@@ -136,6 +181,23 @@ static void Check<T>(List<string> failures, string name, T actual, T expected)
     {
         failures.Add($"{name}: expected '{expected}', got '{actual}'");
     }
+}
+
+// Returns the index of the first differing character between two strings,
+// or -1 when they are equal. Used purely for human-readable diagnostics
+// when the on-disk schema drifts from the compiled-in const.
+static int FirstDifference(string a, string b)
+{
+    var min = a.Length < b.Length ? a.Length : b.Length;
+    for (int i = 0; i < min; i++)
+    {
+        if (a[i] != b[i])
+        {
+            return i;
+        }
+    }
+
+    return a.Length == b.Length ? -1 : min;
 }
 
 namespace ConfigBoundNET.AotTests
