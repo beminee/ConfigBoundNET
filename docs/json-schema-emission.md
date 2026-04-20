@@ -12,6 +12,8 @@ ConfigBoundNET can emit a draft 2020-12 JSON Schema describing every `[ConfigSec
 }
 ```
 
+![alt text](./img/schema_err.png "Example Error")
+
 ## Quick start
 
 1. Add the opt-in property to your `.csproj`:
