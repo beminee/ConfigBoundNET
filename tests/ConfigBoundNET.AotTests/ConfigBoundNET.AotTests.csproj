@@ -149,4 +149,21 @@
     </PropertyGroup>
   </Target>
 
+  <!-- EmitConfigBoundSchema writes the schema to $(TargetDir), which is
+       the pre-publish build output. For Native AOT publish the runtime
+       smoke test runs out of $(PublishDir), so we have to hook into
+       ComputeFilesToPublish and register the schema as a file to copy —
+       otherwise the runtime assertion in Program.cs can't find it. -->
+  <Target Name="_IncludeConfigBoundSchemaInPublish"
+          AfterTargets="EmitConfigBoundSchema"
+          BeforeTargets="ComputeFilesToPublish"
+          Condition="'$(ConfigBoundEmitSchema)' == 'true' and Exists('$(ConfigBoundSchemaOutputPath)')">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(ConfigBoundSchemaOutputPath)">
+        <RelativePath>appsettings.schema.json</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
+
 </Project>
