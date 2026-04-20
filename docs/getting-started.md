@@ -97,5 +97,6 @@ The error message tells you exactly which section and property failed, so you do
 
 - [Validation](validation.md) — DataAnnotations, custom hooks, nested validation
 - [Configuration Binding](configuration-binding.md) — supported types, collections, nested configs
+- [JSON Schema Emission](json-schema-emission.md) — opt into `appsettings.schema.json` for IDE IntelliSense
 - [AOT and Trimming](aot-and-trimming.md) — how the reflection-free pipeline works
-- [Diagnostics Reference](diagnostics.md) — all CB0001–CB0010 diagnostics with examples
+- [Diagnostics Reference](diagnostics.md) — all CB0001–CB0011 diagnostics with examples

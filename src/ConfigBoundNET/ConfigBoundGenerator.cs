@@ -156,5 +156,51 @@ public sealed class ConfigBoundGenerator : IIncrementalGenerator
                 hintName: "ConfigBoundNET.AggregateRegistration.g.cs",
                 sourceText: SourceText.From(source, Encoding.UTF8));
         });
+
+        // ── Step 6: JSON-schema aggregate.
+        //    Collect every successful ConfigSectionModel (not just
+        //    AggregateEntry — the schema emitter needs the full per-type
+        //    detail including properties, annotations, enum members, and
+        //    nested FQNs). Sort by HintName for deterministic output, then
+        //    feed the whole array into SchemaEmitter.Emit which produces a
+        //    single .g.cs containing ConfigBoundJsonSchema.Json as a
+        //    verbatim-string const.
+        //
+        //    This branch is a sibling of the aggregate pipeline, not a
+        //    successor — both derive from buildResults independently so
+        //    adding the schema step does not invalidate the aggregate
+        //    step's cache (or vice versa).
+        var schemaModels = buildResults
+            .Select(static (result, _) => result.Model)
+            .Where(static model => model is not null)
+            .Select(static (model, _) => model!)
+            .Collect()
+            .Select(static (models, _) => models
+                .OrderBy(m => m.HintName, System.StringComparer.Ordinal)
+                .ToImmutableArray())
+            .WithTrackingName(TrackingNames.SchemaModels);
+
+        context.RegisterSourceOutput(schemaModels, static (productionContext, models) =>
+        {
+            // Skip emission entirely when the compilation has no
+            // [ConfigSection] types — avoids generating an empty-shell
+            // ConfigBoundJsonSchema class no consumer would ever use.
+            if (models.Length == 0)
+            {
+                return;
+            }
+
+            var schemaDiagnostics = new System.Collections.Generic.List<DiagnosticInfo>();
+            var source = SchemaEmitter.Emit(models, schemaDiagnostics);
+
+            foreach (var info in schemaDiagnostics)
+            {
+                productionContext.ReportDiagnostic(info.ToDiagnostic());
+            }
+
+            productionContext.AddSource(
+                hintName: "ConfigBoundNET.JsonSchema.g.cs",
+                sourceText: SourceText.From(source, Encoding.UTF8));
+        });
     }
 }

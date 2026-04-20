@@ -167,6 +167,52 @@ internal static class GeneratorHarness
     }
 
     /// <summary>
+    /// Returns the JSON text emitted into <c>ConfigBoundJsonSchema.Json</c>
+    /// by the schema aggregate output. Parses the generated C# file,
+    /// extracts the verbatim-string literal, un-doubles the <c>""</c>
+    /// escapes back to <c>"</c>, and returns the raw JSON. Throws when the
+    /// schema source wasn't emitted (compilation had zero <c>[ConfigSection]</c>
+    /// types) — tests that expect no schema should use <see cref="Run"/>
+    /// and assert on <c>GeneratedTrees</c> absence instead.
+    /// </summary>
+    public static string GetEmittedSchemaJson(this GeneratorDriverRunResult result)
+    {
+        const string SchemaHintSuffix = "ConfigBoundNET.JsonSchema.g.cs";
+        foreach (var tree in result.GeneratedTrees)
+        {
+            if (!tree.FilePath.EndsWith(SchemaHintSuffix, System.StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var text = tree.ToString();
+            // The verbatim-string literal begins after `public const string Json = @"`
+            // and ends at the closing `";`. This is deterministic because
+            // SchemaEmitter.WrapAsConstClass produces exactly that shape.
+            const string StartMarker = "public const string Json = @\"";
+            var start = text.IndexOf(StartMarker, System.StringComparison.Ordinal);
+            if (start < 0)
+            {
+                throw new System.InvalidOperationException(
+                    "Schema source was emitted but did not contain the expected Json const declaration.");
+            }
+
+            start += StartMarker.Length;
+            var end = text.LastIndexOf("\";", System.StringComparison.Ordinal);
+            if (end < start)
+            {
+                throw new System.InvalidOperationException(
+                    "Schema source was emitted but the closing \"; marker was not found.");
+            }
+
+            return text.Substring(start, end - start).Replace("\"\"", "\"");
+        }
+
+        throw new System.InvalidOperationException(
+            "Generator did not emit a JSON schema file. Ensure the compilation contains at least one [ConfigSection] type.");
+    }
+
+    /// <summary>
     /// Returns every generated tree that is <em>not</em> a post-init output
     /// (i.e. excludes the ConfigSection attribute, the
     /// <c>ConfigBoundOptionsFactory</c> helper, and the <c>[Sensitive]</c>

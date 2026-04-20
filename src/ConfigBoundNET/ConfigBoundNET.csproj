@@ -43,6 +43,12 @@
     <!-- Roslyn components cannot depend on the documentation analyzer here
          because it would demand docs on emitted helper types. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!-- NU5100: a DLL not under lib/ won't be added as a compile reference.
+         We intentionally ship the generator and the schema-emission task
+         outside lib/ (analyzers/dotnet/cs/ and tasks/<tfm>/ respectively)
+         because they must not flow into consumers' runtime closure. -->
+    <NoWarn>$(NoWarn);NU5100</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -76,6 +82,23 @@
     <None Include="..\ConfigBoundNET.CodeFixes\$(OutputPath)\ConfigBoundNET.CodeFixes.dll"
           Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
 
+    <!-- Ship the schema-emission MSBuild task alongside the matching
+         props/targets. The task DLL is multi-targeted (net472 for VS /
+         .NET Framework MSBuild, net10.0 for dotnet build / .NET Core
+         MSBuild); ConfigBoundNET.targets picks the right one via
+         $(MSBuildRuntimeType). -->
+    <None Include="..\ConfigBoundNET.Build\bin\$(Configuration)\net472\ConfigBoundNET.Build.dll"
+          Pack="true" PackagePath="tasks\net472" Visible="false" />
+    <None Include="..\ConfigBoundNET.Build\bin\$(Configuration)\net10.0\ConfigBoundNET.Build.dll"
+          Pack="true" PackagePath="tasks\net10.0" Visible="false" />
+
+    <!-- Pack the props + targets under build/. NuGet auto-imports a
+         <PackageId>.props and <PackageId>.targets file from build/ when
+         the package is restored, so consumers get the behaviour with
+         nothing more than a package reference. -->
+    <None Include="build\ConfigBoundNET.props"   Pack="true" PackagePath="build\" Visible="false" />
+    <None Include="build\ConfigBoundNET.targets" Pack="true" PackagePath="build\" Visible="false" />
+
     <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
@@ -94,5 +117,29 @@
     <InternalsVisibleTo Include="ConfigBoundNET.Tests" />
     <InternalsVisibleTo Include="ConfigBoundNET.CodeFixes" />
   </ItemGroup>
+
+  <!-- Build-order dependency on the schema-emission task assembly. Using
+       <ProjectReference> here would cause `dotnet publish` in consumer
+       projects to transitively walk through this generator's reference
+       graph into the multi-targeted task project and fail with MSB4057
+       ("GetCopyToPublishDirectoryItems does not exist"). A direct
+       <MSBuild> invoke builds the task DLL without polluting the
+       reference graph. Pack then picks it up via the
+       <None Include="...ConfigBoundNET.Build.dll" Pack="true"> items
+       in the ItemGroup above.
+
+       Restore has to be invoked explicitly: without a <ProjectReference>
+       the consumer's `dotnet restore` doesn't walk into the task project,
+       so its obj/project.assets.json would be missing when Build runs. -->
+  <Target Name="_BuildConfigBoundTaskAssembly" BeforeTargets="BeforeBuild">
+    <MSBuild Projects="..\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
+             Properties="Configuration=$(Configuration)"
+             Targets="Restore"
+             RemoveProperties="PublishAot;PublishTrimmed;PublishSingleFile;RuntimeIdentifier;TargetFramework" />
+    <MSBuild Projects="..\ConfigBoundNET.Build\ConfigBoundNET.Build.csproj"
+             Properties="Configuration=$(Configuration)"
+             Targets="Build"
+             RemoveProperties="PublishAot;PublishTrimmed;PublishSingleFile;RuntimeIdentifier;TargetFramework" />
+  </Target>
 
 </Project>

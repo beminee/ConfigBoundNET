@@ -33,4 +33,16 @@ internal static class TrackingNames
     /// edits (e.g. adding a <c>[Range]</c> annotation).
     /// </summary>
     internal const string AggregateEntries = nameof(AggregateEntries);
+
+    /// <summary>
+    /// Tracking name for the transform step that feeds every successful
+    /// <see cref="ConfigSectionModel"/> into the JSON-schema aggregate
+    /// emitter. Unlike <see cref="AggregateEntries"/>, this branch does
+    /// carry full per-type detail (properties, annotations, nested FQNs)
+    /// because the schema reflects all of it. Any property-level edit
+    /// therefore re-emits the schema file — acceptable because the schema
+    /// output is a single small <c>.g.cs</c> and downstream consumers
+    /// (editors) expect it to track the source faithfully.
+    /// </summary>
+    internal const string SchemaModels = nameof(SchemaModels);
 }

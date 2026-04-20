@@ -151,4 +151,24 @@ internal static class DiagnosticDescriptors
         defaultSeverity: DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
         description: "ConfigBoundNET emits an explicit, AOT-safe binder. Properties whose types fall outside the supported set (string, primitives, Guid, TimeSpan, DateTime(Offset), Uri, enums, nested [ConfigSection] types, list-like collections of any of those, and Dictionary<string, T> where T is one of those) cannot be bound and are silently skipped.");
+
+    /// <summary>
+    /// CB0011 — a property refers to a nested <c>[ConfigSection]</c> type
+    /// (directly or as a collection element / dictionary value) whose
+    /// definition lives in another assembly that the current compilation
+    /// has not analyzed. The JSON-schema emitter cannot expand it inline
+    /// and falls back to <c>{"type":"object","additionalProperties":true}</c>,
+    /// which is permissive but still valid schema. Informational only —
+    /// the runtime binder is unaffected because nested
+    /// <c>[ConfigSection]</c> types carry their own generated constructor
+    /// and validator in their own assembly.
+    /// </summary>
+    public static readonly DiagnosticDescriptor ExternalNestedConfigNotAnalyzed = new(
+        id: "CB0011",
+        title: "Nested [ConfigSection] type defined outside this compilation",
+        messageFormat: "Nested [ConfigSection] type '{0}' referenced by '{1}' is defined in another assembly; the emitted JSON schema for this property falls back to a permissive object shape",
+        category: Category,
+        defaultSeverity: DiagnosticSeverity.Info,
+        isEnabledByDefault: true,
+        description: "The JSON-schema aggregate output can only inline sub-schemas for [ConfigSection] types visible to the current compilation. Cross-assembly nested configs fall back to '{\"type\":\"object\",\"additionalProperties\":true}'. Runtime binding and validation are unaffected.");
 }

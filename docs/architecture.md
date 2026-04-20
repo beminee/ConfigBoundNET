@@ -11,18 +11,27 @@ User source code
     ↓
 [2] ModelBuilder.Build() transforms the Roslyn symbol into a flat, equatable model
     ↓
-[3] SourceEmitter.Emit() renders the model to C# source text
+[3a] SourceEmitter.Emit() renders the per-type model to C# source text
+[3b] SourceEmitter.EmitAggregateRegistration() renders AddConfigBoundSections
+[3c] SchemaEmitter.Emit() renders the aggregate JSON schema (as a const string)
     ↓
-[4] Roslyn compiles the generated source into the user's assembly
+[4] Roslyn compiles all generated source into the user's assembly
+    ↓
+[5] (opt-in) EmitConfigBoundSchemaTask reads ConfigBoundJsonSchema.Json via
+    MetadataLoadContext and writes appsettings.schema.json to disk
 ```
 
-This is the standard incremental source generator pattern. The critical invariant: **steps 2 and 3 are pure functions of equatable inputs**, so Roslyn can cache their outputs across edits. If the user changes an unrelated file, the generator doesn't re-run.
+This is the standard incremental source generator pattern, augmented with a post-build MSBuild task for step 5. The critical invariant: **steps 2 and 3 are pure functions of equatable inputs**, so Roslyn can cache their outputs across edits. If the user changes an unrelated file, the generator doesn't re-run. Step 3c deliberately uses a separate `.Collect()` pipeline branch so adding a `[Range]` on one type doesn't invalidate the per-type cache of another — only the single schema output file re-emits.
+
+The three emit branches (3a/3b/3c) are sibling pipelines, not sequential: each derives from `buildResults` independently, so they cache-invalidate independently.
 
 ## Project structure
 
 ```
 src/ConfigBoundNET/              → The generator (netstandard2.0, ships as analyzer)
+src/ConfigBoundNET/build/        → .props/.targets packed under build/ in the NuGet
 src/ConfigBoundNET.CodeFixes/    → IDE code-fix providers (separate assembly per RS1038)
+src/ConfigBoundNET.Build/        → MSBuild task that writes appsettings.schema.json on build
 tests/ConfigBoundNET.Tests/      → xUnit tests
 tests/ConfigBoundNET.AotTests/   → AOT smoke-test console app
 examples/ConfigBoundNET.Example/ → Minimal Generic Host example
@@ -156,12 +165,16 @@ The `CompileAndBind` harness is the most complex piece: it runs the generator, c
 
 | File | Purpose |
 |---|---|
-| `AttributeSource.cs` | Embedded C# source for `ConfigSectionAttribute` and `ConfigBoundOptionsFactory<T>` |
+| `AttributeSource.cs` | Embedded C# source for `ConfigSectionAttribute`, `SensitiveAttribute`, and `ConfigBoundOptionsFactory<T>` |
 | `ConfigBoundGenerator.cs` | The `IIncrementalGenerator` entry point — wires post-init + pipeline |
 | `ConfigSectionModel.cs` | All model types + `ModelBuilder` (Roslyn → equatable model) + `DescriptorLookup` |
 | `DataAnnotationModel.cs` | `DataAnnotationKind` enum + `DataAnnotationModel` record |
-| `DiagnosticDescriptors.cs` | All 10 diagnostic descriptors (CB0001–CB0010) |
+| `DiagnosticDescriptors.cs` | All 11 diagnostic descriptors (CB0001–CB0011) |
 | `EquatableArray.cs` | Value-equatable `T[]` wrapper for incremental caching |
+| `SchemaEmitter.cs` | Renders the aggregate JSON schema (draft 2020-12) wrapped in a const-string C# class |
 | `SectionNameHelper.cs` | Shared suffix-stripping logic for section name inference |
-| `SourceEmitter.cs` | Renders models to C# source (constructor, validator, DI extension) |
+| `SourceEmitter.cs` | Renders models to C# source (constructor, validator, DI extension, aggregate registration) |
+| `TrackingNames.cs` | Pipeline-step tracking names used by cache/perf tests |
+| `build/*.{props,targets}` | MSBuild props + targets shipped in the NuGet's `build/` folder |
 | `CodeFixes/*.cs` | Five `CodeFixProvider` implementations (separate assembly) |
+| `ConfigBoundNET.Build/EmitConfigBoundSchemaTask.cs` | MSBuild task that reads the schema const via `MetadataLoadContext` and writes it to disk (separate multi-targeted assembly) |

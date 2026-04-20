@@ -258,6 +258,79 @@ Emitted code is 100% reflection-free: every value is a direct `this.X` read. The
 
 ---
 
+## JSON schema emission for `appsettings.json`
+
+ConfigBoundNET can drop a draft 2020-12 JSON Schema alongside your `appsettings.json` on every build. Reference it via `"$schema"` and your IDE gains IntelliSense, validation red-squiggles, and enum dropdowns — no runtime cost, no extra annotations.
+
+The schema mirrors the full `[ConfigSection]` graph: property types, required-ness, `[Range]` bounds, `[StringLength]`/`[MinLength]`/`[MaxLength]`, `[RegularExpression]` patterns, `[Url]`/`[EmailAddress]` formats, `[AllowedValues]`/`[DeniedValues]`, enum member names, nested objects, collections, and `[Sensitive]` (emitted as `"writeOnly": true`).
+
+### Emission model
+
+Emission is always a two-step pipeline:
+
+1. **The generator** produces `ConfigBoundNET.ConfigBoundJsonSchema.Json` — a `public const string` holding the full schema document. It ships in the same compilation as everything else the generator emits, so it's trivially reachable at runtime (e.g. `File.WriteAllText("schema.json", ConfigBoundJsonSchema.Json)` from a tool, or an `/schema` endpoint in dev).
+2. **An MSBuild task** (shipped in the same NuGet as the generator) reads that const out of the just-built assembly via `MetadataLoadContext` and writes it to disk. This runs after `Build` and uses MSBuild `Inputs`/`Outputs` so a no-op rebuild leaves the file's mtime stable.
+
+### Opt-in
+
+The file-on-disk side is **off by default** so upgrades don't surprise anyone with a new tracked file in their repo. Flip it on per-project:
+
+```xml
+<PropertyGroup>
+  <ConfigBoundEmitSchema>true</ConfigBoundEmitSchema>
+  <!-- Optional — defaults to $(MSBuildProjectDirectory)\appsettings.schema.json -->
+  <ConfigBoundSchemaOutputPath>$(MSBuildProjectDirectory)\config\appsettings.schema.json</ConfigBoundSchemaOutputPath>
+</PropertyGroup>
+```
+
+Then point your `appsettings.json` at it:
+
+```json
+{
+  "$schema": "./appsettings.schema.json",
+  "Db": {
+    "Conn": "Server=localhost;Database=App;Trusted_Connection=True;",
+    "CommandTimeoutSeconds": 30
+  }
+}
+```
+
+Commit the `.schema.json` file alongside `appsettings.json` — it's deterministic output from your `[ConfigSection]` types, and checking it in means contributors get IntelliSense before their first local build.
+
+### The generated schema (example)
+
+For the `DbConfig` at the top of this README, `appsettings.schema.json` is roughly:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "Db": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "Conn": { "type": "string", "writeOnly": true, "description": "Sensitive — redacted in logs." },
+        "CommandTimeoutSeconds": { "type": "integer" },
+        "Port":     { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "Endpoint": { "type": "string", "pattern": "^https?://" }
+      },
+      "required": ["Conn", "Endpoint"]
+    }
+  }
+}
+```
+
+`additionalProperties: true` at the root lets editors tolerate sections ConfigBoundNET doesn't own (`Logging`, `AllowedHosts`, etc.). Each `[ConfigSection]` object sets `additionalProperties: false` so typos inside the sections you *do* own surface as red squiggles.
+
+### Caveats
+
+- Cross-assembly nested `[ConfigSection]` types (the referenced type lives in another assembly the current compilation can't see) fall back to a permissive `{ "type": "object", "additionalProperties": true }` and raise **CB0011** (info-level) so you know which properties are degraded.
+- `[RegularExpression]` patterns are passed through verbatim. JSON Schema speaks ECMA 262 regex; .NET regex is a slightly different dialect. Simple patterns (most real-world config validators) round-trip; exotic `.NET`-only constructs may behave differently in the editor than at runtime.
+
+---
+
 ## Supported property types
 
 The generator emits a **reflection-free** binder, so the set of property types it can read is fixed and explicit. Anything outside this list raises a `CB0010` warning at build time and is silently skipped at runtime (the property keeps its declared default).
@@ -470,6 +543,7 @@ You can inspect the real output by setting `<EmitCompilerGeneratedFiles>true</Em
 | CB0008 | Error    | `[RegularExpression]` pattern is not a valid .NET regex.                      |
 | CB0009 | Info     | `[Required]` is redundant — property is already non-nullable.                |
 | CB0010 | Warning  | Property type is outside the AOT-safe binding set; will be skipped.          |
+| CB0011 | Info     | Nested `[ConfigSection]` type defined outside this compilation; JSON schema falls back to a permissive object shape for that property. |
 
 All diagnostics fire at **build time**. CB0001–CB0003, CB0005, and CB0008 fail the build; the rest are advisory.
 
@@ -505,7 +579,9 @@ Microsoft ships two built-in generators: `[OptionsValidator]` (generates validat
 ```
 ConfigBoundNET/
 ├── src/ConfigBoundNET/              # The incremental source generator (ships as NuGet)
+├── src/ConfigBoundNET/build/        # MSBuild .props/.targets packed into build/ of the NuGet
 ├── src/ConfigBoundNET.CodeFixes/    # IDE code-fix providers (separate assembly per RS1038)
+├── src/ConfigBoundNET.Build/        # MSBuild task that writes appsettings.schema.json
 ├── tests/ConfigBoundNET.Tests/      # xUnit tests driving the generator directly
 ├── tests/ConfigBoundNET.AotTests/   # AOT smoke-test app (IsAotCompatible=true)
 └── examples/ConfigBoundNET.Example/ # Minimal Generic Host app demonstrating end-to-end use
@@ -596,7 +672,7 @@ ConfigBoundNET is at **v2.0.0** and feature-complete for its core remit: declare
 ### Planned
 
 - [x] **`List<[ConfigSection]>` — complex nested collections.** ✅ `List<T>` / `T[]` / `IReadOnlyList<T>` (and the other list-like shapes) bind via `section.GetChildren()` + `new T(child)` per element when `T` is itself `[ConfigSection]`-annotated. Each element is validated through its own generated `Validator`, and failures are merged into the parent's result with an index-tagged named-options key. `[MinLength]`/`[MaxLength]` work on these collections via `.Count` / `.Length`. `Dictionary<string, ComplexType>` remains a follow-up.
-- [ ] **JSON schema emission for `appsettings.json`.** Emit a `.schema.json` at build time from the `[ConfigSection]` graph (types, required-ness, `[Range]` bounds, enum values, regex patterns). Wired via `"$schema"` in `appsettings.json`, users get IntelliSense and red squiggles on config values — no runtime cost, enormous DX win.
+- [x] **JSON schema emission for `appsettings.json`.** ✅ The generator always emits `ConfigBoundNET.ConfigBoundJsonSchema.Json` (a `const string` with the draft 2020-12 schema covering every `[ConfigSection]`, including nested graphs, enum members, DataAnnotations bounds, and `[Sensitive]` → `writeOnly`). A shipped MSBuild task writes it to disk at build time when `<ConfigBoundEmitSchema>true</ConfigBoundEmitSchema>` is set, so editors pick it up via `"$schema"` in `appsettings.json`. See [JSON schema emission for `appsettings.json`](#json-schema-emission-for-appsettingsjson).
 - [x] **`[Sensitive]` attribute + redacted `ToString` + transparent structured-logging redaction.** ✅ Properties marked `[Sensitive]` render as `***` in the generated `ToString()` (records get a `PrintMembers` override; classes get a `ToString` override). Types with any `[Sensitive]` property also explicitly implement `IReadOnlyDictionary<string, object?>`, so Serilog `{@X}`, MEL's `JsonConsoleFormatter`, NLog, OpenTelemetry JSON exporters, and `JsonSerializer.Serialize` all read redacted values through the interface contract — **no reflection**, transparent to callers. Explicit interface members keep the user's API surface unchanged. See [Redacting sensitive properties](#redacting-sensitive-properties) in this README.
 - [ ] **Analyzer for stringly-typed config access.** When a `[ConfigSection("Db")]` exists, flag `configuration["Db:Conn"]` / `configuration.GetValue<T>("Db:…")` and suggest injecting `IOptions<DbConfig>` instead. Turns the generator into a migration tool for existing codebases.
 - [x] **`AddConfigBoundSections(IConfiguration)` aggregate registration.** ✅ One assembly-wide extension in the `ConfigBoundNET` namespace calls every per-type `AddXxxConfig` in alphabetical order, each wrapped in a `ConfigurationExtensions.Exists(section)` gate so types whose section is absent (typically nested-only types with throwaway section names) are silently skipped. Additive: per-type extensions are still emitted and still compose with `AddOptions<T>().ValidateOnStart()`. Users who need validation to fire against an absent section call the per-type `AddXxxConfig` directly.

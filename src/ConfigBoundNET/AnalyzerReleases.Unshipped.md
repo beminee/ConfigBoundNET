@@ -15,3 +15,4 @@ CB0007  | ConfigBoundNET | Warning  | Length attribute applied to non-string pro
 CB0008  | ConfigBoundNET | Error    | [RegularExpression] pattern is not a valid regex
 CB0009  | ConfigBoundNET | Info     | [Required] is redundant on non-nullable property
 CB0010  | ConfigBoundNET | Warning  | Property type is not bindable by ConfigBoundNET
+CB0011  | ConfigBoundNET | Info     | Nested [ConfigSection] type defined outside this compilation
