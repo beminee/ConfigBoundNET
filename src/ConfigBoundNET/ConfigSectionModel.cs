@@ -133,6 +133,15 @@ internal enum ConfigTypeKind
 /// sensitive properties emit no redacted override and keep the
 /// compiler-synthesized record <c>ToString</c>.
 /// </param>
+/// <param name="EnumMemberNames">
+/// For enum-typed properties (scalar or collection-of-enum element): the
+/// declared enum member names in declaration order. Consumed by the
+/// JSON-schema emitter to produce <c>"enum":[...]</c> fragments so editors
+/// can offer IntelliSense on the allowed values. Empty for non-enum
+/// properties. The runtime binder ignores this — it still calls
+/// <c>Enum.TryParse&lt;T&gt;(ignoreCase:true)</c>, which accepts any declared
+/// member.
+/// </param>
 internal sealed record ConfigPropertyModel(
     string Name,
     bool IsRequired,
@@ -147,7 +156,8 @@ internal sealed record ConfigPropertyModel(
     BindingStrategy CollectionElementStrategy,
     string? CollectionElementKeyword,
     bool IsCollectionArray,
-    bool IsSensitive) : IEquatable<ConfigPropertyModel>;
+    bool IsSensitive,
+    EquatableArray<string> EnumMemberNames) : IEquatable<ConfigPropertyModel>;
 
 /// <summary>
 /// How the generated, reflection-free binder should read a property out of an
@@ -303,6 +313,7 @@ internal static class DescriptorLookup
         "CB0008" => DiagnosticDescriptors.InvalidRegexPattern,
         "CB0009" => DiagnosticDescriptors.RedundantRequired,
         "CB0010" => DiagnosticDescriptors.UnsupportedBindingType,
+        "CB0011" => DiagnosticDescriptors.ExternalNestedConfigNotAnalyzed,
         _ => throw new ArgumentOutOfRangeException(nameof(id), id, "Unknown diagnostic id."),
     };
 }
@@ -459,6 +470,11 @@ internal static class ModelBuilder
                 property, classification.Strategy, isString, isRequired, isCollection,
                 diagnostics, syntax);
 
+            // Capture enum member names for scalar enum properties and for
+            // collection-of-enum element types. Consumed by the JSON-schema
+            // emitter; the runtime binder ignores it (still uses TryParse).
+            var enumMembers = ExtractEnumMemberNames(property.Type, classification);
+
             properties.Add(new ConfigPropertyModel(
                 Name: property.Name,
                 IsRequired: isRequired,
@@ -480,7 +496,8 @@ internal static class ModelBuilder
                 CollectionElementStrategy: classification.CollectionElementStrategy,
                 CollectionElementKeyword: classification.CollectionElementKeyword,
                 IsCollectionArray: classification.IsCollectionArray,
-                IsSensitive: isSensitive));
+                IsSensitive: isSensitive,
+                EnumMemberNames: enumMembers));
         }
 
         if (properties.Count == 0)
@@ -854,6 +871,79 @@ internal static class ModelBuilder
 
         fullyQualifiedName = null;
         return false;
+    }
+
+    /// <summary>
+    /// Extracts the declared enum member names from a scalar-enum or
+    /// collection-of-enum property. Returns an empty
+    /// <see cref="EquatableArray{T}"/> for everything else.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Only consumed by the JSON-schema emitter: the runtime binder still
+    /// calls <c>Enum.TryParse&lt;T&gt;(ignoreCase: true)</c>, which accepts
+    /// any declared member regardless of this list. We capture names rather
+    /// than numeric values because JSON config authors typically write the
+    /// member name, and the schema <c>enum</c> fragment must match that
+    /// spelling.
+    /// </para>
+    /// <para>
+    /// For nullable-value enums (<c>MyEnum?</c>) the underlying enum is
+    /// unwrapped from <c>Nullable&lt;T&gt;</c>. For collection-of-enum
+    /// (<c>List&lt;MyEnum&gt;</c>, <c>MyEnum[]</c>, <c>Dictionary&lt;string,
+    /// MyEnum&gt;</c>) the element-type symbol is reached through the type
+    /// arguments of the collection; the classifier has already confirmed
+    /// <see cref="BindingClassification.CollectionElementStrategy"/> equals
+    /// <see cref="BindingStrategy.Enum"/>, so the cast is safe.
+    /// </para>
+    /// </remarks>
+    private static EquatableArray<string> ExtractEnumMemberNames(ITypeSymbol propertyType, BindingClassification classification)
+    {
+        ITypeSymbol? enumType = null;
+
+        if (classification.Strategy == BindingStrategy.Enum)
+        {
+            enumType = propertyType is INamedTypeSymbol nullable
+                && nullable.IsGenericType
+                && nullable.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T
+                ? nullable.TypeArguments[0]
+                : propertyType;
+        }
+        else if (classification.CollectionElementStrategy == BindingStrategy.Enum)
+        {
+            if (propertyType is IArrayTypeSymbol arr)
+            {
+                enumType = arr.ElementType;
+            }
+            else if (propertyType is INamedTypeSymbol generic && generic.IsGenericType)
+            {
+                // Dictionary<string, T> picks TypeArguments[1]; everything
+                // else (List<T>, IList<T>, …) picks TypeArguments[0].
+                var index = classification.Strategy == BindingStrategy.Dictionary ? 1 : 0;
+                if (generic.TypeArguments.Length > index)
+                {
+                    enumType = generic.TypeArguments[index];
+                }
+            }
+        }
+
+        if (enumType is null || enumType.TypeKind != TypeKind.Enum)
+        {
+            return default;
+        }
+
+        var members = new List<string>();
+        foreach (var member in enumType.GetMembers())
+        {
+            if (member is IFieldSymbol field && field.HasConstantValue)
+            {
+                members.Add(field.Name);
+            }
+        }
+
+        return members.Count == 0
+            ? default
+            : new EquatableArray<string>(members.ToArray());
     }
 
     /// <summary>Returns true when <paramref name="type"/> declares a [ConfigSection] attribute.</summary>

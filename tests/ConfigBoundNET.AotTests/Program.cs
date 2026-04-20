@@ -3,6 +3,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json;
 using ConfigBoundNET;
 using ConfigBoundNET.AotTests;
 using Microsoft.Extensions.Configuration;
@@ -88,6 +89,27 @@ Check(failures, "Tenants[acme].Url", db.Tenants["acme"].Url, "https://acme.examp
 Check(failures, "Tenants[acme].Timeout", db.Tenants["acme"].Timeout, TimeSpan.FromSeconds(5));
 Check(failures, "Tenants[globex].Url", db.Tenants["globex"].Url, "https://globex.example/");
 Check(failures, "Tenants[globex].Timeout", db.Tenants["globex"].Timeout, TimeSpan.FromSeconds(15));
+
+// ── JSON-schema const. The generator emits ConfigBoundJsonSchema.Json as
+//    a verbatim-string const describing every [ConfigSection] in the
+//    assembly. Parse it with JsonDocument (AOT-safe, no reflection) and
+//    assert the top-level "Db" property exists with an "object" shape.
+//    Catches regressions where the schema pipeline fails to emit or the
+//    wrapper class's name/namespace drifts. ────────────────────────────────
+try
+{
+    using var schemaDoc = JsonDocument.Parse(ConfigBoundJsonSchema.Json);
+    var root = schemaDoc.RootElement;
+    var dbSchema = root.GetProperty("properties").GetProperty("Db");
+    if (dbSchema.GetProperty("type").GetString() != "object")
+    {
+        failures.Add("ConfigBoundJsonSchema.Json: top-level Db section did not have type=object.");
+    }
+}
+catch (JsonException ex)
+{
+    failures.Add("ConfigBoundJsonSchema.Json: failed to parse as JSON — " + ex.Message);
+}
 
 // ── Report. ────────────────────────────────────────────────────────────────
 if (failures.Count == 0)
