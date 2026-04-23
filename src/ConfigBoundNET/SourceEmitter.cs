@@ -108,13 +108,23 @@ internal static class SourceEmitter
         writer.WriteLine("/// </summary>");
         writer.WriteLine("/// <param name=\"services\">The service collection to register into.</param>");
         writer.WriteLine("/// <param name=\"configuration\">The application's <c>IConfiguration</c> root or parent section.</param>");
+        writer.WriteLine("/// <param name=\"validateOnStart\">");
+        writer.WriteLine("/// When <see langword=\"true\"/>, chains");
+        writer.WriteLine("/// <c>AddOptions&lt;T&gt;().ValidateOnStart()</c> for every registered section so");
+        writer.WriteLine("/// misconfiguration fails at host start instead of on first");
+        writer.WriteLine("/// <c>IOptions&lt;T&gt;.Value</c> read. Only applies to sections that pass the");
+        writer.WriteLine("/// <c>.Exists()</c> gate; absent sections remain silently skipped. Default");
+        writer.WriteLine("/// <see langword=\"false\"/> preserves the v2.x behaviour where validation");
+        writer.WriteLine("/// fires lazily on first resolution.");
+        writer.WriteLine("/// </param>");
         writer.WriteLine("/// <returns>The original <paramref name=\"services\"/> instance, enabling fluent chaining.</returns>");
         writer.WriteLine("/// <exception cref=\"global::System.ArgumentNullException\">Thrown when <paramref name=\"services\"/> or <paramref name=\"configuration\"/> is <see langword=\"null\"/>.</exception>");
 
         writer.WriteLine("public static global::Microsoft.Extensions.DependencyInjection.IServiceCollection AddConfigBoundSections(");
         writer.Indent++;
         writer.WriteLine("this global::Microsoft.Extensions.DependencyInjection.IServiceCollection services,");
-        writer.WriteLine("global::Microsoft.Extensions.Configuration.IConfiguration configuration)");
+        writer.WriteLine("global::Microsoft.Extensions.Configuration.IConfiguration configuration,");
+        writer.WriteLine("bool validateOnStart = false)");
         writer.Indent--;
 
         writer.WriteLine("{");
@@ -153,6 +163,33 @@ internal static class SourceEmitter
             writer.Write(".Add");
             writer.Write(entry.TypeName);
             writer.WriteLine("(services, configuration);");
+
+            // When the caller opted into validateOnStart, chain
+            // AddOptions<T>().ValidateOnStart() so a bad config crashes the
+            // host during StartAsync rather than on first IOptions<T>.Value
+            // read. Both calls use fully qualified static-call syntax
+            // (matching the ConfigurationExtensions.Exists pattern above).
+            // The generated aggregate file emits no `using` directives, so
+            // instance-extension resolution wouldn't work here regardless of
+            // which assembly ships OptionsBuilderExtensions on the consumer's
+            // target (Microsoft.Extensions.Hosting historically, or
+            // Microsoft.Extensions.Options on .NET 8+). Both assemblies
+            // expose the extension in the same
+            // Microsoft.Extensions.DependencyInjection namespace, so the
+            // pinned static-call form resolves equally well across versions.
+            writer.WriteLine("if (validateOnStart)");
+            writer.WriteLine("{");
+            writer.Indent++;
+            writer.Write("global::Microsoft.Extensions.DependencyInjection.OptionsBuilderExtensions.ValidateOnStart<");
+            writer.Write(typeQualifier);
+            writer.WriteLine(">(");
+            writer.Indent++;
+            writer.Write("global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions<");
+            writer.Write(typeQualifier);
+            writer.WriteLine(">(services));");
+            writer.Indent--;
+            writer.Indent--;
+            writer.WriteLine("}");
             writer.Indent--;
             writer.WriteLine("}");
         }

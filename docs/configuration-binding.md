@@ -247,6 +247,18 @@ builder.Services.AddConfigBoundSections(builder.Configuration);
 
 This calls every `Add{TypeName}Config` in the assembly in a single line — useful when a project has many `[ConfigSection]` types.
 
+### Failing fast at host start
+
+Chain `validateOnStart: true` to move validation from first-resolution to host-start — the same fail-fast guarantee you'd get from `services.AddOptions<T>().ValidateOnStart()` per type, in one call:
+
+```csharp
+builder.Services.AddConfigBoundSections(builder.Configuration, validateOnStart: true);
+```
+
+With the flag on, every registered section also has `AddOptions<T>().ValidateOnStart()` chained after its `AddXxxConfig` call, so any `[Range]` / `[Required]` / nullability / custom `ValidateCustom` failure throws an `OptionsValidationException` from `host.StartAsync()`. Without the flag (default), validation is still wired via `IValidateOptions<T>` but fires lazily on the first `IOptions<T>.Value` read — which can hide misconfigurations until a cold-path request hours after the app boots.
+
+The flag only affects sections that pass the `.Exists()` gate below: absent sections remain silently skipped regardless of `validateOnStart`. If you want validation to fire against a missing section, call the per-type `AddXxxConfig` directly (see below).
+
 ### The `.Exists()` gate
 
 Each per-type call is wrapped at runtime in a `ConfigurationExtensions.Exists(section)` check:

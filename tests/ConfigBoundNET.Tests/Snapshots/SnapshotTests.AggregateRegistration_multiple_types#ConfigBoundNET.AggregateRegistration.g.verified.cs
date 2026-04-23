@@ -23,11 +23,21 @@ public static class ConfigBoundSectionRegistrations
     /// </summary>
     /// <param name="services">The service collection to register into.</param>
     /// <param name="configuration">The application's <c>IConfiguration</c> root or parent section.</param>
+    /// <param name="validateOnStart">
+    /// When <see langword="true"/>, chains
+    /// <c>AddOptions&lt;T&gt;().ValidateOnStart()</c> for every registered section so
+    /// misconfiguration fails at host start instead of on first
+    /// <c>IOptions&lt;T&gt;.Value</c> read. Only applies to sections that pass the
+    /// <c>.Exists()</c> gate; absent sections remain silently skipped. Default
+    /// <see langword="false"/> preserves the v2.x behaviour where validation
+    /// fires lazily on first resolution.
+    /// </param>
     /// <returns>The original <paramref name="services"/> instance, enabling fluent chaining.</returns>
     /// <exception cref="global::System.ArgumentNullException">Thrown when <paramref name="services"/> or <paramref name="configuration"/> is <see langword="null"/>.</exception>
     public static global::Microsoft.Extensions.DependencyInjection.IServiceCollection AddConfigBoundSections(
         this global::Microsoft.Extensions.DependencyInjection.IServiceCollection services,
-        global::Microsoft.Extensions.Configuration.IConfiguration configuration)
+        global::Microsoft.Extensions.Configuration.IConfiguration configuration,
+        bool validateOnStart = false)
     {
         if (services is null) throw new global::System.ArgumentNullException(nameof(services));
         if (configuration is null) throw new global::System.ArgumentNullException(nameof(configuration));
@@ -35,10 +45,20 @@ public static class ConfigBoundSectionRegistrations
         if (global::Microsoft.Extensions.Configuration.ConfigurationExtensions.Exists(configuration.GetSection(global::MyApp.Api.ApiConfig.SectionName)))
         {
             global::MyApp.Api.ApiConfigServiceCollectionExtensions.AddApiConfig(services, configuration);
+            if (validateOnStart)
+            {
+                global::Microsoft.Extensions.DependencyInjection.OptionsBuilderExtensions.ValidateOnStart<global::MyApp.Api.ApiConfig>(
+                    global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions<global::MyApp.Api.ApiConfig>(services));
+            }
         }
         if (global::Microsoft.Extensions.Configuration.ConfigurationExtensions.Exists(configuration.GetSection(global::MyApp.Db.DbConfig.SectionName)))
         {
             global::MyApp.Db.DbConfigServiceCollectionExtensions.AddDbConfig(services, configuration);
+            if (validateOnStart)
+            {
+                global::Microsoft.Extensions.DependencyInjection.OptionsBuilderExtensions.ValidateOnStart<global::MyApp.Db.DbConfig>(
+                    global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions<global::MyApp.Db.DbConfig>(services));
+            }
         }
         
         return services;
