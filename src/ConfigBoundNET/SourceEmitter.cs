@@ -80,7 +80,7 @@ internal static class SourceEmitter
     /// name collisions with user types in the consumer's namespace.
     /// </para>
     /// </remarks>
-    public static string EmitAggregateRegistration(ImmutableArray<AggregateEntry> entries)
+    public static string EmitAggregateRegistration(EquatableArray<AggregateEntry> entries)
     {
         var buffer = new StringBuilder();
         using var stringWriter = new StringWriter(buffer);
@@ -100,11 +100,15 @@ internal static class SourceEmitter
         writer.Indent++;
 
         writer.WriteLine("/// <summary>");
-        writer.WriteLine("/// Registers every <c>[ConfigSection]</c>-annotated type in this assembly");
-        writer.WriteLine("/// whose configuration section exists in <paramref name=\"configuration\"/>.");
-        writer.WriteLine("/// Types whose section is absent are silently skipped — if you need");
-        writer.WriteLine("/// unconditional registration (e.g. to run the validator against a missing");
-        writer.WriteLine("/// section), call the per-type <c>Add{TypeName}Config</c> extension directly.");
+        writer.WriteLine("/// Registers every <c>[ConfigSection]</c>-annotated type in this assembly.");
+        writer.WriteLine("/// Top-level types (neither flagged with <c>IsNestedOnly = true</c> nor");
+        writer.WriteLine("/// referenced as a nested property of another <c>[ConfigSection]</c> in this");
+        writer.WriteLine("/// compilation) are registered unconditionally — a missing root section");
+        writer.WriteLine("/// becomes a validation failure (lazily on first <c>IOptions&lt;T&gt;.Value</c>");
+        writer.WriteLine("/// read, or eagerly at host start when <paramref name=\"validateOnStart\"/> is");
+        writer.WriteLine("/// <see langword=\"true\"/>). Nested-only types stay gated behind a");
+        writer.WriteLine("/// <c>ConfigurationExtensions.Exists(…)</c> check so throwaway section names");
+        writer.WriteLine("/// (e.g. <c>__endpoint__</c>) don't spuriously fail validation on startup.");
         writer.WriteLine("/// </summary>");
         writer.WriteLine("/// <param name=\"services\">The service collection to register into.</param>");
         writer.WriteLine("/// <param name=\"configuration\">The application's <c>IConfiguration</c> root or parent section.</param>");
@@ -150,48 +154,35 @@ internal static class SourceEmitter
                 ? $"global::{entry.TypeName}ServiceCollectionExtensions"
                 : $"global::{entry.Namespace}.{entry.TypeName}ServiceCollectionExtensions";
 
-            // Runtime .Exists() gate: skip types whose section is absent from
-            // the live configuration. Keeps nested-only types (arbitrary
-            // section names like "__inner__") from spuriously failing
-            // validation on startup.
-            writer.Write("if (global::Microsoft.Extensions.Configuration.ConfigurationExtensions.Exists(configuration.GetSection(");
-            writer.Write(typeQualifier);
-            writer.WriteLine(".SectionName)))");
-            writer.WriteLine("{");
-            writer.Indent++;
-            writer.Write(extensionsQualifier);
-            writer.Write(".Add");
-            writer.Write(entry.TypeName);
-            writer.WriteLine("(services, configuration);");
-
-            // When the caller opted into validateOnStart, chain
-            // AddOptions<T>().ValidateOnStart() so a bad config crashes the
-            // host during StartAsync rather than on first IOptions<T>.Value
-            // read. Both calls use fully qualified static-call syntax
-            // (matching the ConfigurationExtensions.Exists pattern above).
-            // The generated aggregate file emits no `using` directives, so
-            // instance-extension resolution wouldn't work here regardless of
-            // which assembly ships OptionsBuilderExtensions on the consumer's
-            // target (Microsoft.Extensions.Hosting historically, or
-            // Microsoft.Extensions.Options on .NET 8+). Both assemblies
-            // expose the extension in the same
-            // Microsoft.Extensions.DependencyInjection namespace, so the
-            // pinned static-call form resolves equally well across versions.
-            writer.WriteLine("if (validateOnStart)");
-            writer.WriteLine("{");
-            writer.Indent++;
-            writer.Write("global::Microsoft.Extensions.DependencyInjection.OptionsBuilderExtensions.ValidateOnStart<");
-            writer.Write(typeQualifier);
-            writer.WriteLine(">(");
-            writer.Indent++;
-            writer.Write("global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions<");
-            writer.Write(typeQualifier);
-            writer.WriteLine(">(services));");
-            writer.Indent--;
-            writer.Indent--;
-            writer.WriteLine("}");
-            writer.Indent--;
-            writer.WriteLine("}");
+            if (entry.IsReferencedAsNested)
+            {
+                // Nested-only type: wrap in a runtime .Exists() gate so a
+                // missing root section doesn't spuriously fail validation.
+                // The throwaway section name (e.g. "__endpoint__") is
+                // expected to have no entry in the live IConfiguration;
+                // the type will still be bound and validated via its
+                // parent's recursive constructor.
+                writer.Write("if (global::Microsoft.Extensions.Configuration.ConfigurationExtensions.Exists(configuration.GetSection(");
+                writer.Write(typeQualifier);
+                writer.WriteLine(".SectionName)))");
+                writer.WriteLine("{");
+                writer.Indent++;
+                WriteAggregateEntryBody(writer, entry, typeQualifier, extensionsQualifier);
+                writer.Indent--;
+                writer.WriteLine("}");
+            }
+            else
+            {
+                // Top-level type: register unconditionally. If the root
+                // section is missing the binder reads empty values, the
+                // generated validator fails, and either:
+                //   - validateOnStart == false → IOptions<T>.Value throws
+                //     on first read (lazy), matching the per-type
+                //     AddXxxConfig direct-call semantics.
+                //   - validateOnStart == true → OptionsValidationException
+                //     surfaces from host.StartAsync() via StartupValidator.
+                WriteAggregateEntryBody(writer, entry, typeQualifier, extensionsQualifier);
+            }
         }
 
         writer.WriteLine();
@@ -205,6 +196,50 @@ internal static class SourceEmitter
 
         writer.Flush();
         return buffer.ToString();
+    }
+
+    /// <summary>
+    /// Writes one aggregate-entry body: the <c>AddXxxConfig(services, configuration)</c>
+    /// call plus the optional <c>AddOptions&lt;T&gt;().ValidateOnStart()</c>
+    /// chain. Shared between the gated (nested-only) and ungated (top-level)
+    /// paths in <see cref="EmitAggregateRegistration"/>.
+    /// </summary>
+    /// <remarks>
+    /// Both calls use fully qualified static-call syntax (matching the
+    /// <c>ConfigurationExtensions.Exists</c> pattern elsewhere in the
+    /// emitted file). The generated aggregate file emits no <c>using</c>
+    /// directives, so instance-extension resolution wouldn't work here
+    /// regardless of which assembly ships <c>OptionsBuilderExtensions</c>
+    /// on the consumer's target (<c>Microsoft.Extensions.Hosting</c>
+    /// historically, or <c>Microsoft.Extensions.Options</c> on .NET 8+).
+    /// Both assemblies expose the extension in the same
+    /// <c>Microsoft.Extensions.DependencyInjection</c> namespace, so the
+    /// pinned static-call form resolves equally well across versions.
+    /// </remarks>
+    private static void WriteAggregateEntryBody(
+        IndentedTextWriter writer,
+        AggregateEntry entry,
+        string typeQualifier,
+        string extensionsQualifier)
+    {
+        writer.Write(extensionsQualifier);
+        writer.Write(".Add");
+        writer.Write(entry.TypeName);
+        writer.WriteLine("(services, configuration);");
+
+        writer.WriteLine("if (validateOnStart)");
+        writer.WriteLine("{");
+        writer.Indent++;
+        writer.Write("global::Microsoft.Extensions.DependencyInjection.OptionsBuilderExtensions.ValidateOnStart<");
+        writer.Write(typeQualifier);
+        writer.WriteLine(">(");
+        writer.Indent++;
+        writer.Write("global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions<");
+        writer.Write(typeQualifier);
+        writer.WriteLine(">(services));");
+        writer.Indent--;
+        writer.Indent--;
+        writer.WriteLine("}");
     }
 
     /// <summary>Writes the file header, auto-generated comment, and using directives.</summary>

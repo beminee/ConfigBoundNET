@@ -92,6 +92,115 @@ public sealed class AggregateValidateOnStartTests
     }
 
     [Fact]
+    public async Task With_flag_missing_top_level_section_fails_at_host_start()
+    {
+        // The fail-fast promise of validateOnStart:true only pays off when a
+        // top-level [ConfigSection] type whose root section is entirely
+        // absent still produces a startup failure. Before the aggregate
+        // classification tightened, the .Exists() gate silently skipped
+        // such types — hiding real misconfigurations until a cold-path
+        // request. This test pins that gate-tightening: with an empty
+        // config, the DbConfig top-level entry is registered unconditionally
+        // and its validator fires during simulated host start.
+        var emptyConfig = new Dictionary<string, string?>();
+        var (_, services) = GeneratorHarness.CompileAndAggregate(
+            FixtureSource,
+            emptyConfig,
+            validateOnStart: true);
+
+        await using var sp = services.BuildServiceProvider();
+
+        var ex = await Assert.ThrowsAsync<OptionsValidationException>(
+            () => SimulateHostStartAsync(sp));
+
+        Assert.Contains("[Db:Conn]", string.Join(" ", ex.Failures));
+    }
+
+    [Fact]
+    public async Task With_flag_missing_nested_only_section_is_skipped_via_inference()
+    {
+        // Counterpart to the top-level test: EndpointConfig is referenced
+        // as a List<EndpointConfig> property inside DbConfig, so the
+        // aggregate classification infers it as nested and applies the
+        // .Exists() gate. The Db root section is present (with an empty
+        // Endpoints array), the __endpoint__ section is absent — and the
+        // aggregate must NOT fail startup on the missing nested-only
+        // section because that section name is a throwaway scaffold the
+        // user never intends to author at root.
+        const string NestedFixture = """
+            using System.Collections.Generic;
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("__endpoint__")]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+                public List<EndpointConfig> Endpoints { get; init; } = new();
+            }
+            """;
+
+        var validConfig = new Dictionary<string, string?>
+        {
+            ["Db:Conn"] = "Server=localhost;Database=X;",
+        };
+
+        var (_, services) = GeneratorHarness.CompileAndAggregate(
+            NestedFixture,
+            validConfig,
+            validateOnStart: true);
+
+        await using var sp = services.BuildServiceProvider();
+
+        // Host start must succeed: Db validates cleanly and EndpointConfig
+        // was gated away because inference classified it nested.
+        await SimulateHostStartAsync(sp);
+    }
+
+    [Fact]
+    public async Task With_flag_missing_nested_only_section_is_skipped_via_attribute_flag()
+    {
+        // Cross-assembly scenario: the library author ships an
+        // IsNestedOnly=true type whose nested usage lives in a consumer's
+        // assembly (not in the generator's current compilation). In-
+        // compilation inference would classify it top-level — but the
+        // explicit flag must override and keep the gate applied.
+        const string LibraryFixture = """
+            using ConfigBoundNET;
+
+            namespace Lib;
+
+            [ConfigSection("__endpoint__", IsNestedOnly = true)]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        var emptyConfig = new Dictionary<string, string?>();
+        var (_, services) = GeneratorHarness.CompileAndAggregate(
+            LibraryFixture,
+            emptyConfig,
+            validateOnStart: true);
+
+        await using var sp = services.BuildServiceProvider();
+
+        // Despite EndpointConfig being the only [ConfigSection] in the
+        // compilation (so no in-compilation nested reference exists),
+        // the IsNestedOnly=true flag classifies it as nested and the
+        // aggregate wraps its registration in the .Exists() gate. An
+        // absent __endpoint__ section is therefore silently skipped.
+        await SimulateHostStartAsync(sp);
+    }
+
+    [Fact]
     public async Task With_flag_validation_fires_at_host_start()
     {
         // Arrange: same fixture, this time with the flag on. The generator's

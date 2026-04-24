@@ -658,6 +658,62 @@ public sealed class SnapshotTests
         return VerifyDriver(Source);
     }
 
+    [Fact]
+    public Task AggregateRegistration_nested_only_type_mixed()
+    {
+        // Canonical mixed case: an outer [ConfigSection] with a List<> of an
+        // inner [ConfigSection]-annotated type. In-compilation nested-use
+        // inference must classify the inner type as nested (gated emission),
+        // and the outer type as top-level (ungated emission). Pins the
+        // per-entry branching inside EmitAggregateRegistration against
+        // regressions in AggregateClassification.
+        const string Source = """
+            using System.Collections.Generic;
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("__endpoint__")]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+                public List<EndpointConfig> Endpoints { get; init; } = new();
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
+    [Fact]
+    public Task AggregateRegistration_IsNestedOnly_attribute_flag()
+    {
+        // The IsNestedOnly=true named argument is the library-author escape
+        // hatch for cross-assembly nesting: the type must be classified
+        // nested (gated) even when no in-compilation reference exists. This
+        // fixture has only one [ConfigSection] type and no outer container,
+        // so inference alone would classify it top-level — the explicit
+        // flag is what flips it to gated.
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace Lib;
+
+            [ConfigSection("__endpoint__", IsNestedOnly = true)]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
     // ── [Sensitive] redaction ────────────────────────────────────────────
 
     [Fact]
