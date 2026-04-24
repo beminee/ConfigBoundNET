@@ -120,30 +120,49 @@ public sealed class ConfigBoundGenerator : IIncrementalGenerator
                 sourceText: SourceText.From(source, Encoding.UTF8));
         });
 
-        // ── Step 4: project every successful model into a minimal
-        //    AggregateEntry (namespace + type name only) and collect them into
-        //    a single ordered array. The aggregate pipeline is deliberately
-        //    isolated from per-type detail so that unrelated edits (e.g.
-        //    adding a [Range] attribute) never re-emit the assembly-wide
-        //    registration file.
-        var aggregateEntries = buildResults
-            .Select(static (result, _) =>
-                result.Model is null
-                    ? null
-                    : new AggregateEntry(result.Model.Namespace, result.Model.TypeName))
-            .Where(static entry => entry is not null)
-            .Select(static (entry, _) => entry!)
-            .WithTrackingName(TrackingNames.AggregateEntries);
-
-        // Collect all entries into a single equatable array and sort them
-        // deterministically (namespace then type name) so the generated file
-        // is byte-stable across runs — snapshot tests rely on this.
-        var aggregateCollected = aggregateEntries
+        // ── Step 4: build the aggregate entry array.
+        //    Classification of each entry's IsReferencedAsNested flag is a
+        //    cross-type fact: we need to know what other [ConfigSection]
+        //    types reference this one. That rules out the old "project each
+        //    BuildResult independently" approach — we must .Collect() the
+        //    full model set first, compute the nested-FQN set once, and
+        //    then derive per-entry flags.
+        //
+        //    Cache behaviour stays friendly: the projection output is still
+        //    an ImmutableArray<AggregateEntry> whose equality compares only
+        //    (Namespace, TypeName, IsReferencedAsNested) triples. Per-type
+        //    annotation edits don't move any triple, so the aggregate
+        //    source output remains Unchanged — the existing
+        //    Editing_unrelated_annotation_does_not_invalidate_aggregate
+        //    test keeps passing. Adding a new nested reference DOES flip
+        //    the target's flag, which is the correct invalidation.
+        //    Wrap the transform output in EquatableArray<T> (rather than
+        //    ImmutableArray<T>) so Roslyn's pipeline cache compares
+        //    element-wise instead of by reference. Without the wrapper, a
+        //    fresh ImmutableArray produced by this transform on every
+        //    re-run would always report Modified — even when every entry
+        //    is value-equal to the previous run — because
+        //    EqualityComparer<ImmutableArray<T>>.Default resolves to the
+        //    reference-based ObjectEqualityComparer.
+        var aggregateCollected = buildResults
+            .Select(static (result, _) => result.Model)
+            .Where(static model => model is not null)
+            .Select(static (model, _) => model!)
             .Collect()
-            .Select(static (entries, _) => entries
-                .OrderBy(e => e.Namespace ?? string.Empty, System.StringComparer.Ordinal)
-                .ThenBy(e => e.TypeName, System.StringComparer.Ordinal)
-                .ToImmutableArray());
+            .Select(static (models, _) =>
+            {
+                var nestedFqns = AggregateClassification.BuildNestedFqnSet(models);
+                var entries = models
+                    .Select(m => new AggregateEntry(
+                        m.Namespace,
+                        m.TypeName,
+                        AggregateClassification.IsReferencedAsNested(m, nestedFqns)))
+                    .OrderBy(e => e.Namespace ?? string.Empty, System.StringComparer.Ordinal)
+                    .ThenBy(e => e.TypeName, System.StringComparer.Ordinal)
+                    .ToArray();
+                return new EquatableArray<AggregateEntry>(entries);
+            })
+            .WithTrackingName(TrackingNames.AggregateEntries);
 
         // ── Step 5: emit one AddConfigBoundSections extension per compilation.
         //    Runs even when the array is empty — the method is then emitted

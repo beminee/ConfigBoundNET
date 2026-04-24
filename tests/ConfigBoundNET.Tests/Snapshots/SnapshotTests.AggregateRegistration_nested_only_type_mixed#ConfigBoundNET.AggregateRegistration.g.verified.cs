@@ -46,19 +46,19 @@ public static class ConfigBoundSectionRegistrations
         if (services is null) throw new global::System.ArgumentNullException(nameof(services));
         if (configuration is null) throw new global::System.ArgumentNullException(nameof(configuration));
         
-        global::MyApp.ApiConfigServiceCollectionExtensions.AddApiConfig(services, configuration);
+        global::MyApp.DbConfigServiceCollectionExtensions.AddDbConfig(services, configuration);
         if (validateOnStart)
         {
-            global::Microsoft.Extensions.DependencyInjection.OptionsBuilderExtensions.ValidateOnStart<global::MyApp.ApiConfig>(
-                global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions<global::MyApp.ApiConfig>(services));
+            global::Microsoft.Extensions.DependencyInjection.OptionsBuilderExtensions.ValidateOnStart<global::MyApp.DbConfig>(
+                global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions<global::MyApp.DbConfig>(services));
         }
-        if (global::Microsoft.Extensions.Configuration.ConfigurationExtensions.Exists(configuration.GetSection(global::MyApp.TenantConfig.SectionName)))
+        if (global::Microsoft.Extensions.Configuration.ConfigurationExtensions.Exists(configuration.GetSection(global::MyApp.EndpointConfig.SectionName)))
         {
-            global::MyApp.TenantConfigServiceCollectionExtensions.AddTenantConfig(services, configuration);
+            global::MyApp.EndpointConfigServiceCollectionExtensions.AddEndpointConfig(services, configuration);
             if (validateOnStart)
             {
-                global::Microsoft.Extensions.DependencyInjection.OptionsBuilderExtensions.ValidateOnStart<global::MyApp.TenantConfig>(
-                    global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions<global::MyApp.TenantConfig>(services));
+                global::Microsoft.Extensions.DependencyInjection.OptionsBuilderExtensions.ValidateOnStart<global::MyApp.EndpointConfig>(
+                    global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions<global::MyApp.EndpointConfig>(services));
             }
         }
         

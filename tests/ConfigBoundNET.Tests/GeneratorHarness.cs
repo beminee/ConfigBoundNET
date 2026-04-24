@@ -12,6 +12,7 @@ using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace ConfigBoundNET.Tests;
@@ -44,6 +45,12 @@ internal static class GeneratorHarness
                 MetadataReference.CreateFromFile(typeof(ServiceCollectionDescriptorExtensions).Assembly.Location),
                 MetadataReference.CreateFromFile(typeof(IOptions<>).Assembly.Location),
                 MetadataReference.CreateFromFile(typeof(OptionsConfigurationServiceCollectionExtensions).Assembly.Location),
+                // Microsoft.Extensions.Hosting hosts OptionsBuilderExtensions.ValidateOnStart,
+                // which the generator's aggregate output now references whenever the
+                // caller opts into validateOnStart:true. The symbol has to resolve even
+                // when the test fixture never passes the flag — generator output is
+                // compiled once per test regardless of runtime parameter values.
+                MetadataReference.CreateFromFile(typeof(IHost).Assembly.Location),
             })
             .ToImmutableArray();
 
@@ -340,13 +347,21 @@ internal static class GeneratorHarness
     /// <summary>
     /// Compiles <paramref name="source"/>, runs the generator, and invokes the
     /// assembly-wide <c>ConfigBoundNET.ConfigBoundSectionRegistrations
-    /// .AddConfigBoundSections(services, configuration)</c> method. Returns
-    /// both the assembly (so the caller can locate types by name) and the
-    /// populated <see cref="IServiceCollection"/> (so the caller can assert on
-    /// what registrations did — or did not — happen, which matters for the
-    /// <c>.Exists()</c>-gate behaviour).
+    /// .AddConfigBoundSections(services, configuration, validateOnStart)</c>
+    /// method. Returns both the assembly (so the caller can locate types by
+    /// name) and the populated <see cref="IServiceCollection"/> (so the caller
+    /// can assert on what registrations did — or did not — happen, which
+    /// matters for the <c>.Exists()</c>-gate behaviour).
     /// </summary>
-    public static (Assembly Assembly, IServiceCollection Services) CompileAndAggregate(string source, IDictionary<string, string?> configValues)
+    /// <param name="source">C# source text containing one or more <c>[ConfigSection]</c> types.</param>
+    /// <param name="configValues">Flat key/value pairs fed to a memory-backed <see cref="ConfigurationBuilder"/>.</param>
+    /// <param name="validateOnStart">
+    /// Value forwarded to the generator-emitted aggregate extension. Default
+    /// <see langword="false"/> keeps pre-existing tests working unchanged;
+    /// fail-fast tests pass <see langword="true"/> to exercise the
+    /// <c>AddOptions&lt;T&gt;().ValidateOnStart()</c> chain.
+    /// </param>
+    public static (Assembly Assembly, IServiceCollection Services) CompileAndAggregate(string source, IDictionary<string, string?> configValues, bool validateOnStart = false)
     {
         var parseOptions = new CSharpParseOptions(LanguageVersion.Latest);
         var syntaxTree = CSharpSyntaxTree.ParseText(source, parseOptions);
@@ -395,7 +410,10 @@ internal static class GeneratorHarness
             BindingFlags.Public | BindingFlags.Static)!;
 
         var services = new ServiceCollection();
-        aggregateMethod.Invoke(null, new object[] { services, configuration });
+        // AddConfigBoundSections(services, configuration, bool validateOnStart = false).
+        // The default parameter means call sites that passed two args before
+        // still work through Invoke — we just always supply the third slot.
+        aggregateMethod.Invoke(null, new object[] { services, configuration, validateOnStart });
         return (assembly, services);
     }
 

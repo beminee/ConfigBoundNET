@@ -46,19 +46,13 @@ public static class ConfigBoundSectionRegistrations
         if (services is null) throw new global::System.ArgumentNullException(nameof(services));
         if (configuration is null) throw new global::System.ArgumentNullException(nameof(configuration));
         
-        global::MyApp.ApiConfigServiceCollectionExtensions.AddApiConfig(services, configuration);
-        if (validateOnStart)
+        if (global::Microsoft.Extensions.Configuration.ConfigurationExtensions.Exists(configuration.GetSection(global::Lib.EndpointConfig.SectionName)))
         {
-            global::Microsoft.Extensions.DependencyInjection.OptionsBuilderExtensions.ValidateOnStart<global::MyApp.ApiConfig>(
-                global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions<global::MyApp.ApiConfig>(services));
-        }
-        if (global::Microsoft.Extensions.Configuration.ConfigurationExtensions.Exists(configuration.GetSection(global::MyApp.TenantConfig.SectionName)))
-        {
-            global::MyApp.TenantConfigServiceCollectionExtensions.AddTenantConfig(services, configuration);
+            global::Lib.EndpointConfigServiceCollectionExtensions.AddEndpointConfig(services, configuration);
             if (validateOnStart)
             {
-                global::Microsoft.Extensions.DependencyInjection.OptionsBuilderExtensions.ValidateOnStart<global::MyApp.TenantConfig>(
-                    global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions<global::MyApp.TenantConfig>(services));
+                global::Microsoft.Extensions.DependencyInjection.OptionsBuilderExtensions.ValidateOnStart<global::Lib.EndpointConfig>(
+                    global::Microsoft.Extensions.DependencyInjection.OptionsServiceCollectionExtensions.AddOptions<global::Lib.EndpointConfig>(services));
             }
         }
         

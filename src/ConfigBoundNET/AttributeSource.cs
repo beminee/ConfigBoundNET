@@ -153,6 +153,24 @@ namespace ConfigBoundNET
 
         /// <summary>Gets the configuration section name supplied at construction time, or empty if inferred.</summary>
         public string SectionName { get; }
+
+        /// <summary>
+        /// When <see langword=""true""/>, signals that this type exists only as a
+        /// nested config (a property, collection element, or dictionary value of
+        /// another <c>[ConfigSection]</c>). The assembly-wide
+        /// <c>AddConfigBoundSections</c> extension then wraps its registration in
+        /// a <c>.Exists()</c> gate so a missing root section doesn't spuriously
+        /// fail startup validation. Default <see langword=""false""/>.
+        /// </summary>
+        /// <remarks>
+        /// The generator also auto-detects nested use when one <c>[ConfigSection]</c>
+        /// in the same compilation references another via a property, collection
+        /// element, or dictionary value. Setting this flag is necessary only for
+        /// types whose nested use lives in a <em>different</em> assembly (a library
+        /// author shipping nested-only building blocks to consumers), where the
+        /// generator compiling the library can't see the downstream reference.
+        /// </remarks>
+        public bool IsNestedOnly { get; init; }
     }
 }
 ";

@@ -2,6 +2,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Threading;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -29,29 +30,118 @@ namespace ConfigBoundNET;
 /// A deterministic file name suffix used when calling <c>AddSource</c>. Two types
 /// in different namespaces may share a simple name, so the hint encodes both.
 /// </param>
+/// <param name="IsNestedOnly">
+/// <see langword="true"/> when the user decorated the type with
+/// <c>[ConfigSection("…", IsNestedOnly = true)]</c>. Forces the aggregate
+/// pipeline to treat the type as nested regardless of in-compilation usage
+/// (solves the cross-assembly case where a library ships a nested-only
+/// type whose usage lives in consumer code the generator can't see).
+/// </param>
 internal sealed record ConfigSectionModel(
     string TypeName,
     string? Namespace,
     string SectionName,
     ConfigTypeKind Kind,
     EquatableArray<ConfigPropertyModel> Properties,
-    string HintName);
+    string HintName,
+    bool IsNestedOnly);
 
 /// <summary>
 /// Minimal equatable projection of a <see cref="ConfigSectionModel"/> used by
 /// the assembly-wide <c>AddConfigBoundSections</c> emitter. Carries just the
-/// type identity (namespace + simple name) that the aggregate registration
-/// method needs to call <c>{Namespace}.{TypeName}ServiceCollectionExtensions
-/// .Add{TypeName}(services, configuration)</c> via fully qualified syntax.
-/// <para>
-/// Deliberately excludes per-type detail (properties, DataAnnotations,
-/// SectionName) so that edits to those fields do not invalidate the
-/// aggregate pipeline's cache — adding a <c>[Range]</c> attribute on one
-/// property in one <c>[ConfigSection]</c> type must not cause the
-/// assembly-wide aggregate file to re-emit.
-/// </para>
+/// type identity (namespace + simple name) plus the classification flag that
+/// decides whether the aggregate registration should gate on
+/// <c>ConfigurationExtensions.Exists(…)</c>.
 /// </summary>
-internal sealed record AggregateEntry(string? Namespace, string TypeName);
+/// <param name="Namespace">The containing namespace, or <see langword="null"/> for the global namespace.</param>
+/// <param name="TypeName">The simple type name (e.g. <c>DbConfig</c>).</param>
+/// <param name="IsReferencedAsNested">
+/// <see langword="true"/> when the type is expected to be nested under another
+/// <c>[ConfigSection]</c> — either explicitly via
+/// <c>[ConfigSection(…, IsNestedOnly = true)]</c> or because some other
+/// in-compilation <c>[ConfigSection]</c> type has a property referencing it.
+/// The aggregate emitter wraps gated types in a <c>.Exists()</c> check so a
+/// missing root section doesn't spuriously fail startup; top-level types
+/// (flag <see langword="false"/>) are registered unconditionally so a missing
+/// root section does become a validation failure.
+/// <para>
+/// Deliberately a computed cross-type fact rather than a pure per-type
+/// projection: adding a <c>List&lt;OtherConfig&gt;</c> property to one
+/// <c>[ConfigSection]</c> type correctly flips the flag on the other —
+/// invalidating the aggregate cache only when classification actually
+/// shifts, not on unrelated property or annotation edits.
+/// </para>
+/// </param>
+internal sealed record AggregateEntry(
+    string? Namespace,
+    string TypeName,
+    bool IsReferencedAsNested);
+
+/// <summary>
+/// Cross-type classification helpers for the aggregate pipeline. Lives here
+/// (rather than in <c>SourceEmitter</c>) so both the generator pipeline and
+/// any future analyzer can share the rules.
+/// </summary>
+internal static class AggregateClassification
+{
+    /// <summary>
+    /// Builds the set of FQNs (in the format produced by
+    /// <see cref="Microsoft.CodeAnalysis.SymbolDisplayFormat.FullyQualifiedFormat"/>)
+    /// referenced as nested-config property types somewhere in
+    /// <paramref name="models"/>. Any trailing nullable-reference
+    /// annotation (<c>?</c>) is stripped so the returned set is
+    /// match-ready against un-annotated model FQNs.
+    /// </summary>
+    public static HashSet<string> BuildNestedFqnSet(ImmutableArray<ConfigSectionModel> models)
+    {
+        var set = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var model in models)
+        {
+            foreach (var prop in model.Properties)
+            {
+                if (prop.Binding is BindingStrategy.NestedConfig
+                        or BindingStrategy.NestedConfigCollection
+                        or BindingStrategy.NestedConfigDictionary
+                    && prop.NestedTypeFullyQualifiedName is { Length: > 0 } fqn)
+                {
+                    // List<EndpointConfig?> preserves the `?` on the
+                    // stored FQN; strip it so the lookup matches the
+                    // un-annotated FQN we build from ConfigSectionModel
+                    // (Namespace, TypeName) pairs.
+                    if (fqn[fqn.Length - 1] == '?')
+                    {
+                        fqn = fqn.Substring(0, fqn.Length - 1);
+                    }
+
+                    set.Add(fqn);
+                }
+            }
+        }
+
+        return set;
+    }
+
+    /// <summary>
+    /// Classifies <paramref name="model"/> as nested-referenced when either
+    /// the user explicitly flagged it (<see cref="ConfigSectionModel.IsNestedOnly"/>)
+    /// or the compilation-wide <paramref name="nestedFqns"/> set contains its
+    /// FQN. Explicit flag wins — a library author's intent is always honoured,
+    /// even when no in-compilation usage exists yet.
+    /// </summary>
+    public static bool IsReferencedAsNested(ConfigSectionModel model, HashSet<string> nestedFqns)
+    {
+        if (model.IsNestedOnly)
+        {
+            return true;
+        }
+
+        var fqn = model.Namespace is null
+            ? "global::" + model.TypeName
+            : "global::" + model.Namespace + "." + model.TypeName;
+
+        return nestedFqns.Contains(fqn);
+    }
+}
 
 /// <summary>
 /// Minimal classification of the declared type so the emitter can pick the
@@ -407,6 +497,25 @@ internal static class ModelBuilder
             return new BuildResult(null, new EquatableArray<DiagnosticInfo>(diagnostics.ToArray()));
         }
 
+        // ── Named argument: IsNestedOnly.
+        //    Library authors shipping types that will only ever appear as
+        //    nested properties of a *consumer*'s [ConfigSection] need a way
+        //    to signal that intent in their own assembly (where the usage
+        //    doesn't yet exist). The named-argument syntax
+        //    [ConfigSection("__ep__", IsNestedOnly = true)] surfaces in
+        //    attribute metadata as a NamedArgument keyed by the property
+        //    name — same pattern used by ExtractDataAnnotations for
+        //    [Range(..., ErrorMessage = "…")] below.
+        var isNestedOnly = false;
+        foreach (var named in attribute.NamedArguments)
+        {
+            if (named.Key == "IsNestedOnly" && named.Value.Value is bool flag)
+            {
+                isNestedOnly = flag;
+                break;
+            }
+        }
+
         // ── Collect bindable properties. We accept any public property with a
         //    setter or init accessor. Read-only properties cannot participate
         //    in configuration binding, so we silently skip them.
@@ -526,7 +635,8 @@ internal static class ModelBuilder
             SectionName: sectionName!,
             Kind: symbol.IsRecord ? ConfigTypeKind.Record : ConfigTypeKind.Class,
             Properties: new EquatableArray<ConfigPropertyModel>(properties.ToArray()),
-            HintName: hint);
+            HintName: hint,
+            IsNestedOnly: isNestedOnly);
 
         return new BuildResult(model, new EquatableArray<DiagnosticInfo>(diagnostics.ToArray()));
     }

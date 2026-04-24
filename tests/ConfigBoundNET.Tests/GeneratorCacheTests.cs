@@ -242,6 +242,100 @@ public sealed class GeneratorCacheTests
     }
 
     [Fact]
+    public void Adding_a_nested_reference_flips_target_aggregate_entry()
+    {
+        // AggregateEntry now carries IsReferencedAsNested, a cross-type fact
+        // derived from scanning every model's property list for nested-config
+        // references. Introducing a new List<T> property that references
+        // another [ConfigSection] type MUST invalidate the aggregate cache
+        // for the target type (its classification just flipped from
+        // top-level to nested-referenced), but must NOT bleed into
+        // aggregate cache for unrelated types.
+        const string Baseline = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+            }
+
+            [ConfigSection("Endpoint")]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        var (driver, compilation) = GeneratorHarness.CreateDriverWithTracking(Baseline);
+
+        // Introduce a nested reference to EndpointConfig from DbConfig.
+        // Inference should now classify EndpointConfig as
+        // IsReferencedAsNested=true, producing a Modified output on the
+        // AggregateEntries tracking step.
+        var original = compilation.SyntaxTrees.First();
+        var modifiedSource = original.GetText().ToString().Replace(
+            "public string Conn { get; init; } = default!;",
+            "public string Conn { get; init; } = default!;\n    public System.Collections.Generic.List<EndpointConfig> Endpoints { get; init; } = new();");
+
+        var modifiedTree = CSharpSyntaxTree.ParseText(modifiedSource);
+        compilation = compilation.ReplaceSyntaxTree(original, modifiedTree);
+        driver = driver.RunGenerators(compilation);
+
+        var result = driver.GetRunResult().Results[0];
+        var outputs = result.TrackedSteps[TrackingNames.AggregateEntries]
+            .SelectMany(step => step.Outputs)
+            .Select(o => o.Reason)
+            .ToList();
+
+        // Adding the nested reference flips EndpointConfig's flag, so the
+        // aggregate-entries array is no longer byte-equal to the baseline.
+        // Expect at least one Modified reason.
+        Assert.Contains(outputs, r => r is IncrementalStepRunReason.Modified or IncrementalStepRunReason.New);
+    }
+
+    [Fact]
+    public void Toggling_IsNestedOnly_flips_aggregate_entry()
+    {
+        // Parallel to the inference test: setting IsNestedOnly=true on
+        // the attribute must flip the target's IsReferencedAsNested flag
+        // even though no in-compilation nested reference exists. This is
+        // the cross-assembly library-author path.
+        const string Baseline = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("__ep__")]
+            public partial record EndpointConfig
+            {
+                public string Url { get; init; } = default!;
+            }
+            """;
+
+        var (driver, compilation) = GeneratorHarness.CreateDriverWithTracking(Baseline);
+
+        var original = compilation.SyntaxTrees.First();
+        var modifiedSource = original.GetText().ToString().Replace(
+            "[ConfigSection(\"__ep__\")]",
+            "[ConfigSection(\"__ep__\", IsNestedOnly = true)]");
+
+        var modifiedTree = CSharpSyntaxTree.ParseText(modifiedSource);
+        compilation = compilation.ReplaceSyntaxTree(original, modifiedTree);
+        driver = driver.RunGenerators(compilation);
+
+        var result = driver.GetRunResult().Results[0];
+        var outputs = result.TrackedSteps[TrackingNames.AggregateEntries]
+            .SelectMany(step => step.Outputs)
+            .Select(o => o.Reason)
+            .ToList();
+
+        Assert.Contains(outputs, r => r is IncrementalStepRunReason.Modified or IncrementalStepRunReason.New);
+    }
+
+    [Fact]
     public void Editing_unrelated_annotation_does_not_invalidate_aggregate()
     {
         // The AggregateEntries pipeline step carries only (Namespace, TypeName)

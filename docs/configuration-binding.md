@@ -247,23 +247,50 @@ builder.Services.AddConfigBoundSections(builder.Configuration);
 
 This calls every `Add{TypeName}Config` in the assembly in a single line — useful when a project has many `[ConfigSection]` types.
 
-### The `.Exists()` gate
+### Failing fast at host start
 
-Each per-type call is wrapped at runtime in a `ConfigurationExtensions.Exists(section)` check:
+Chain `validateOnStart: true` to move validation from first-resolution to host-start — the same fail-fast guarantee you'd get from `services.AddOptions<T>().ValidateOnStart()` per type, in one call:
 
 ```csharp
-if (configuration.GetSection(DbConfig.SectionName).Exists())
-    DbConfigServiceCollectionExtensions.AddDbConfig(services, configuration);
+builder.Services.AddConfigBoundSections(builder.Configuration, validateOnStart: true);
 ```
 
-So a type whose configuration section is **absent** from the live `IConfiguration` is silently skipped — the validator does not run, and the type is not registered in DI. This is intended for types that exist only as nested or list/dictionary elements of another config type, where the element type's own `[ConfigSection("…")]` section name is a throwaway scaffold never meant to appear in real config.
+With the flag on, every registered section also has `AddOptions<T>().ValidateOnStart()` chained after its `AddXxxConfig` call, so any `[Range]` / `[Required]` / nullability / custom `ValidateCustom` failure throws an `OptionsValidationException` from `host.StartAsync()`. Without the flag (default), validation is still wired via `IValidateOptions<T>` but fires lazily on the first `IOptions<T>.Value` read — which can hide misconfigurations until a cold-path request hours after the app boots.
+
+### The `.Exists()` gate (nested-only types only)
+
+**Top-level types** — those never referenced as a nested property in any other `[ConfigSection]` and never flagged with `IsNestedOnly = true` — are registered unconditionally by the aggregate. A missing root section therefore produces a default-bound instance, which the generated validator then rejects (lazily on first `IOptions<T>.Value` read, or eagerly at host start when `validateOnStart: true`). That's the fail-fast behaviour most users want for their primary config sections.
+
+**Nested-only types** — identified either by in-compilation inference or by the explicit `IsNestedOnly = true` attribute flag — are wrapped at runtime in a `ConfigurationExtensions.Exists(section)` gate:
+
+```csharp
+if (configuration.GetSection(EndpointConfig.SectionName).Exists())
+    EndpointConfigServiceCollectionExtensions.AddEndpointConfig(services, configuration);
+```
+
+A nested-only type whose root-level section is absent is silently skipped — the validator does not run standalone, and the type is still bound and validated through its parent's recursive constructor. This is what you want for types with throwaway section names like `__endpoint__` that exist only to scaffold the nested binder.
+
+#### How a type gets classified nested-only
+
+1. **Compile-time inference** (the common path): another `[ConfigSection]` type in the same compilation has a property of type `T`, `List<T>`, `T[]`, `Dictionary<string, T>`, or any of the other supported collection shapes. The generator sees the reference and flips `T`'s classification to nested.
+
+2. **Explicit author intent** via the attribute's named argument:
+
+   ```csharp
+   [ConfigSection("__endpoint__", IsNestedOnly = true)]
+   public partial record EndpointConfig { … }
+   ```
+
+   Use this when the nested usage lives in a *different* assembly — a library ships the building block, consumers embed it. The generator compiling the library can't see the consumer's `List<EndpointConfig>` reference, so inference alone would (wrongly) classify the type as top-level. The flag overrides that.
+
+3. **Dual-use types** (a type registered at root AND embedded in another `[ConfigSection]`): inference classifies them nested because the property reference exists, so the aggregate gate applies — a missing root section for a dual-use type is silently skipped. If you want strict root validation for such a type, call the per-type `AddXxxConfig` directly (see below).
 
 ### When to use the per-type extension instead
 
 Prefer `services.AddXxxConfig(config)` directly when:
-- You want the validator to fire even when the section is absent (e.g. to catch "forgot to add the section").
-- You want fluent composition with `.AddOptions<T>().ValidateOnStart().Configure(…)`.
+
+- You want unconditional registration for a type that happens to be classified nested (dual-use scenario, or a consumer choosing to override a library's `IsNestedOnly` intent).
+- You want fluent composition with `.AddOptions<T>().ValidateOnStart().Configure(…)` or `.Configure<TDep>(…)`.
 - You want conditional registration: `if (feature) services.AddXConfig(config);`.
-- You're writing a reusable library that ships `[ConfigSection]` types — consumers can opt into just the ones they want.
 
 The aggregate is additive. Both coexist, and nothing stops you from mixing them in the same `Program.cs`.
