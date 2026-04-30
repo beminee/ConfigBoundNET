@@ -62,14 +62,28 @@ builder.Services
 Or, if you have a handful of `[ConfigSection]` types and just want them all wired up at once:
 
 ```csharp
-// Registers every [ConfigSection] type in the assembly whose section exists
-// in config. Skipped types (e.g. nested-only types with throwaway section
-// names) stay unregistered — call AddXxxConfig(config) explicitly if you
-// need validation to fire against an absent section.
+// Registers every [ConfigSection] type in the assembly. Top-level types
+// (not referenced as a nested property of another [ConfigSection] and not
+// flagged IsNestedOnly=true) are registered unconditionally — a missing
+// root section becomes a validation failure. Nested-only types stay gated
+// behind .Exists() so throwaway section names (e.g. "__endpoint__") don't
+// spuriously fail startup.
 builder.Services.AddConfigBoundSections(builder.Configuration);
+
+// Fail-fast: bad config crashes the host during StartAsync, not on first
+// IOptions<T>.Value read. Equivalent to chaining
+// AddOptions<T>().ValidateOnStart() on every registered section.
+builder.Services.AddConfigBoundSections(builder.Configuration, validateOnStart: true);
 ```
 
-`AddConfigBoundSections` is additive: the per-type `AddXxxConfig` methods are still emitted and still compose with `AddOptions<T>().ValidateOnStart()`.
+For library authors shipping a type that should stay gated even when no in-assembly nested reference exists (e.g. a building block consumers embed in their own `[ConfigSection]`), add the explicit marker:
+
+```csharp
+[ConfigSection("__endpoint__", IsNestedOnly = true)]
+public partial record EndpointConfig { /* … */ }
+```
+
+`AddConfigBoundSections` is additive: the per-type `AddXxxConfig` methods are still emitted and still compose with `AddOptions<T>().ValidateOnStart()`. Consumers can always call the per-type extension to force root registration regardless of classification.
 
 ConfigBoundNET generates everything else at build time:
 

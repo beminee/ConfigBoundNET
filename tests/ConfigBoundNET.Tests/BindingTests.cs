@@ -1551,29 +1551,35 @@ public sealed class BindingTests
     }
 
     [Fact]
-    public void AddConfigBoundSections_skips_type_whose_section_is_absent()
+    public void AddConfigBoundSections_skips_nested_referenced_type_whose_section_is_absent()
     {
-        // Only "Db" is present in config; "__tenant__" is absent. The
-        // .Exists() gate in the generated aggregate skips AddTenantConfig
-        // entirely, so TenantConfig's validator never fires against an empty
-        // section. This is the whole point of the gate: nested-only types
-        // with throwaway section names don't produce spurious
-        // "[__tenant__:Url] is required" failures at startup.
+        // The gate now fires only for types the aggregate classifies as
+        // nested — either via a nested-property reference from another
+        // [ConfigSection] (the inference path exercised here) or via an
+        // explicit IsNestedOnly=true flag on the attribute. This fixture
+        // embeds List<TenantConfig> inside DbConfig, so inference flips
+        // TenantConfig's IsReferencedAsNested to true and the aggregate
+        // wraps its AddTenantConfig call in .Exists(). With only the "Db"
+        // section present, the "__tenant__" section is absent and the
+        // TenantConfig validator is never registered — no spurious
+        // "[__tenant__:Url] is required" at startup.
         const string Source = """
+            using System.Collections.Generic;
             using ConfigBoundNET;
 
             namespace MyApp;
-
-            [ConfigSection("Db")]
-            public partial record DbConfig
-            {
-                public string Conn { get; init; } = default!;
-            }
 
             [ConfigSection("__tenant__")]
             public partial record TenantConfig
             {
                 public string Url { get; init; } = default!;
+            }
+
+            [ConfigSection("Db")]
+            public partial record DbConfig
+            {
+                public string Conn { get; init; } = default!;
+                public List<TenantConfig> Tenants { get; init; } = new();
             }
             """;
 
@@ -1596,8 +1602,9 @@ public sealed class BindingTests
         // DbConfig's section exists → its validator is registered.
         Assert.Contains(services, sd => sd.ServiceType == dbValidatorServiceType);
 
-        // TenantConfig's section is absent → the aggregate skipped it, so
-        // its validator was never registered.
+        // TenantConfig is inferred-nested and its section is absent →
+        // the aggregate's .Exists() gate skipped it, so its validator
+        // was never registered at the root.
         Assert.DoesNotContain(services, sd => sd.ServiceType == tenantValidatorServiceType);
     }
 

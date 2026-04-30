@@ -56,6 +56,13 @@
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.5" />
+
+    <!-- Hosting drives the AddConfigBoundSections(validateOnStart: true) tests:
+         ValidateOnStart() registers an IHostedService that the real host runs
+         during StartAsync, which is the behaviour the new flag is meant to
+         trigger. Also pulls in HostApplicationBuilder so the test can mirror
+         realistic Program.cs wiring instead of hand-rolling IHostedService. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.5" />
   </ItemGroup>
 
   <ItemGroup>
