@@ -299,6 +299,50 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public Task Required_keyword_emits_SetsRequiredMembers()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+            using System.ComponentModel.DataAnnotations;
+
+            namespace MyApp;
+
+            [ConfigSection("Turnstile")]
+            public sealed partial class TurnstileSettings
+            {
+                [MinLength(32)]
+                public required string Secret { get; init; }
+
+                [MinLength(24)]
+                public required string SiteKey { get; init; }
+
+                public string? OptionalNote { get; init; }
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
+    [Fact]
+    public Task NonRequired_keyword_omits_SetsRequiredMembers()
+    {
+        const string Source = """
+            using ConfigBoundNET;
+
+            namespace MyApp;
+
+            [ConfigSection("Plain")]
+            public partial record PlainConfig
+            {
+                public string Name { get; init; } = default!;
+                public int Count { get; init; }
+            }
+            """;
+
+        return VerifyDriver(Source);
+    }
+
+    [Fact]
     public Task Multiple_annotations_on_same_property()
     {
         const string Source = """

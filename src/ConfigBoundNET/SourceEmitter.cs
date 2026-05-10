@@ -1080,6 +1080,21 @@ internal static class SourceEmitter
         writer.WriteLine("/// </summary>");
         writer.WriteLine("/// <param name=\"section\">The configuration section to read from.</param>");
 
+        var emitsRequiredKeyword = false;
+        foreach (var prop in model.Properties)
+        {
+            if (prop.HasRequiredKeyword)
+            {
+                emitsRequiredKeyword = true;
+                break;
+            }
+        }
+
+        if (emitsRequiredKeyword)
+        {
+            writer.WriteLine("[global::System.Diagnostics.CodeAnalysis.SetsRequiredMembers]");
+        }
+
         writer.Write("public ");
         writer.Write(model.TypeName);
         writer.WriteLine("(global::Microsoft.Extensions.Configuration.IConfigurationSection section)");

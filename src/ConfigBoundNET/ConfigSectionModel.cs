@@ -164,6 +164,14 @@ internal enum ConfigTypeKind
 /// <see langword="true"/> if the generator should emit a null/empty check for this property.
 /// See <see cref="ModelBuilder.IsRequired"/> for the decision rules.
 /// </param>
+/// <param name="HasRequiredKeyword">
+/// <see langword="true"/> only when the property is declared with the C# 11
+/// <c>required</c> modifier. Distinct from <see cref="IsRequired"/>, which also
+/// flags non-nullable reference types. Drives whether the emitted constructor
+/// needs <c>[SetsRequiredMembers]</c> to satisfy the compiler's
+/// definite-assignment rule (CS9035) — that rule only fires for the
+/// <c>required</c> keyword, not for nullability-inferred required-ness.
+/// </param>
 /// <param name="IsReferenceType">Whether the property type is a reference type (and therefore null-checkable).</param>
 /// <param name="IsString">
 /// Whether the property type is exactly <see cref="string"/>. Strings get a stricter
@@ -235,6 +243,7 @@ internal enum ConfigTypeKind
 internal sealed record ConfigPropertyModel(
     string Name,
     bool IsRequired,
+    bool HasRequiredKeyword,
     bool IsReferenceType,
     bool IsString,
     BindingStrategy Binding,
@@ -587,6 +596,7 @@ internal static class ModelBuilder
             properties.Add(new ConfigPropertyModel(
                 Name: property.Name,
                 IsRequired: isRequired,
+                HasRequiredKeyword: property.IsRequired,
                 IsReferenceType: isReferenceType,
                 IsString: isString,
                 Binding: classification.Strategy,
